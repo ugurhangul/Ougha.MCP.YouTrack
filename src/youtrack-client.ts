@@ -195,6 +195,34 @@ export class YouTrackClient {
   }
 
   /**
+   * Resolve a project identifier (ID or shortName) to a project ID
+   * YouTrack API requires the actual project ID (e.g., "0-1") for issue creation,
+   * but users often prefer the shortName (e.g., "QM").
+   * This method transparently handles both cases.
+   */
+  async resolveProjectId(projectIdentifier: string): Promise<string> {
+    // If it looks like an ID (contains a dash with numbers), return as-is
+    if (/^\d+-\d+$/.test(projectIdentifier)) {
+      return projectIdentifier;
+    }
+
+    // Otherwise, try to resolve the shortName to an ID
+    try {
+      const project = await this.getProject(projectIdentifier);
+      if (this.config.debug) {
+        console.log(`Resolved project shortName "${projectIdentifier}" to ID "${project.id}"`);
+      }
+      return project.id;
+    } catch (error) {
+      // If resolution fails, return the original - let the API provide the error
+      if (this.config.debug) {
+        console.log(`Could not resolve project "${projectIdentifier}", using as-is`);
+      }
+      return projectIdentifier;
+    }
+  }
+
+  /**
    * List users
    */
   async getUsers(query?: string, limit = 50): Promise<YouTrackUser[]> {
@@ -344,8 +372,11 @@ export class YouTrackClient {
    * Create a new issue
    */
   async createIssue(createRequest: CreateIssueRequest): Promise<YouTrackIssue> {
+    // Resolve project shortName to ID if needed
+    const projectId = await this.resolveProjectId(createRequest.project);
+
     const issueData: any = {
-      project: { id: createRequest.project },
+      project: { id: projectId },
       summary: createRequest.summary
     };
 
@@ -700,13 +731,13 @@ export class YouTrackClient {
     const createdLink = updatedLinks.find(link => {
       const linkTypeName = (link.linkType.localizedName || link.linkType.name).toLowerCase();
       return (linkTypeName.includes('depend') && linkTypeKey.includes('depend')) ||
-             (linkTypeName.includes('block') && linkTypeKey.includes('block')) ||
-             (linkTypeName.includes('relate') && linkTypeKey.includes('relate')) ||
-             (linkTypeName.includes('subtask') && linkTypeKey.includes('subtask')) ||
-             (linkTypeName.includes('parent') && linkTypeKey.includes('parent')) ||
-             (linkTypeName.includes('duplicate') && linkTypeKey.includes('duplicate')) &&
-             link.direction === direction &&
-             link.issues.some(issue => issue.idReadable === linkRequest.targetIssue);
+        (linkTypeName.includes('block') && linkTypeKey.includes('block')) ||
+        (linkTypeName.includes('relate') && linkTypeKey.includes('relate')) ||
+        (linkTypeName.includes('subtask') && linkTypeKey.includes('subtask')) ||
+        (linkTypeName.includes('parent') && linkTypeKey.includes('parent')) ||
+        (linkTypeName.includes('duplicate') && linkTypeKey.includes('duplicate')) &&
+        link.direction === direction &&
+        link.issues.some(issue => issue.idReadable === linkRequest.targetIssue);
     });
 
     if (!createdLink) {
@@ -974,14 +1005,14 @@ export class YouTrackClient {
     // Try different endpoints in order of preference
     const endpoints = projectId
       ? [
-          `/admin/projects/${projectId}/issueLinkTypes?${fields}`,
-          `/issueLinkTypes?${fields}`,
-          `/admin/issueLinkTypes?${fields}`
-        ]
+        `/admin/projects/${projectId}/issueLinkTypes?${fields}`,
+        `/issueLinkTypes?${fields}`,
+        `/admin/issueLinkTypes?${fields}`
+      ]
       : [
-          `/issueLinkTypes?${fields}`,
-          `/admin/issueLinkTypes?${fields}`
-        ];
+        `/issueLinkTypes?${fields}`,
+        `/admin/issueLinkTypes?${fields}`
+      ];
 
     let lastError: any;
 
@@ -1057,11 +1088,11 @@ export class YouTrackClient {
             // For the standard "Subtask" link type, parent links OUTWARD to subtask
             direction = 'OUTWARD';
           } else if (linkTypeName.toLowerCase().includes('subtask of') ||
-                     linkTypeName.toLowerCase().includes('child of')) {
+            linkTypeName.toLowerCase().includes('child of')) {
             // For "subtask of" links, parent should link OUTWARD to subtask
             direction = 'OUTWARD';
           } else if (linkTypeName.toLowerCase().includes('parent for') ||
-                     linkTypeName.toLowerCase().includes('parent of')) {
+            linkTypeName.toLowerCase().includes('parent of')) {
             // For "parent for" links, parent should link OUTWARD to subtask
             direction = 'OUTWARD';
           }
