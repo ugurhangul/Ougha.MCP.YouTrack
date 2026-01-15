@@ -1,0 +1,17 @@
+﻿{
+  "mcpServers": {
+    "ougha-youtrack": {
+      "command": "node",
+      "args": [
+        "D:/repos/ugurhangul/youtrackMCP/build/index.js"
+      ],
+      "env": {
+        "YOUTRACK_URL": "https://your-company.youtrack.cloud",
+        "YOUTRACK_TOKEN": "your-permanent-token-here",
+        "YOUTRACK_TIMEOUT": "30000",
+        "YOUTRACK_RATE_LIMIT": "60",
+        "DEBUG": "false"
+      }
+    }
+  }
+}

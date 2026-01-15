@@ -1,0 +1,52 @@
+{
+  "name": "ougha-mcp-youtrack",
+  "version": "1.0.0",
+  "description": "Model Context Protocol server for JetBrains YouTrack integration",
+  "type": "module",
+  "main": "build/index.js",
+  "bin": {
+    "ougha-mcp-youtrack": "./build/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:unix": "tsc && chmod +x build/index.js",
+    "start": "node build/index.js",
+    "clean": "rimraf build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "youtrack",
+    "jetbrains",
+    "issue-tracking",
+    "project-management"
+  ],
+  "author": "Ougha.MCP.YouTrack",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.0.0"
+  },
+  "files": [
+    "build",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ugurhangul/youtrackMCP.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ugurhangul/youtrackMCP/issues"
+  },
+  "homepage": "https://github.com/ugurhangul/youtrackMCP#readme"
+}
