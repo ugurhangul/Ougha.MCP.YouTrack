@@ -353,14 +353,47 @@ export class YouTrackClient {
     const customFields: any[] = [];
 
     // Add existing custom fields from the request
+    // Need to properly format with $type for YouTrack API
     Object.entries(existingFields).forEach(([name, value]) => {
-      customFields.push({
-        name,
-        value
-      });
+      // If value already has $type at its level, it was pre-formatted - need to restructure
+      if (value && typeof value === 'object' && value.$type) {
+        const { $type, ...rest } = value;
+        customFields.push({
+          name,
+          value: rest,
+          $type
+        });
+      } else {
+        // Infer $type based on field name and value type
+        let fieldType = 'SingleEnumIssueCustomField'; // default
+        let formattedValue = value;
+
+        if (name === 'Estimation' || name === 'Spent time') {
+          fieldType = 'PeriodIssueCustomField';
+          formattedValue = typeof value === 'object' ? value : { minutes: value };
+        } else if (name === 'Story Points') {
+          fieldType = 'SimpleIssueCustomField';
+          // Story Points value should be directly the number, not wrapped
+        } else if (name === 'Assignee') {
+          fieldType = 'SingleUserIssueCustomField';
+          formattedValue = typeof value === 'string' ? { id: value } : value;
+        } else if (name === 'Start Date' || name === 'Due Date' || name.toLowerCase().includes('date')) {
+          fieldType = 'DateIssueCustomField';
+          formattedValue = typeof value === 'number' ? value : value;
+        } else if (typeof value === 'string') {
+          // Enum fields expect value as { name: <string> }
+          formattedValue = { name: value };
+        }
+
+        customFields.push({
+          name,
+          value: formattedValue,
+          $type: fieldType
+        });
+      }
     });
 
-    // Add additional fields (priority, state, type, etc.)
+    // Add additional fields (priority, state, type, etc.) - these are already properly formatted
     additionalFields.forEach(field => {
       customFields.push(field);
     });
@@ -1139,30 +1172,15 @@ export class YouTrackClient {
    * Create a subtask and link it to a parent issue
    */
   async createSubtask(request: CreateSubtaskRequest): Promise<{ subtask: YouTrackIssue; link: YouTrackIssueLink }> {
-    // First, verify the parent issue exists
-    await this.getIssue(request.parentIssueId);
-
-    // Prepare custom fields for the subtask
-    let customFields = request.customFields || {};
-
-    if (request.estimationMinutes !== undefined) {
-      customFields['Estimation'] = {
-        minutes: request.estimationMinutes,
-        $type: 'PeriodIssueCustomField'
-      };
-    }
-
-    if (request.storyPoints !== undefined) {
-      customFields['Story Points'] = {
-        value: request.storyPoints,
-        $type: 'SimpleIssueCustomField'
-      };
-    }
-
     // Get the parent issue to inherit project
     const parentIssue = await this.getIssue(request.parentIssueId);
 
-    // Create the subtask issue
+    // Build custom fields properly with $type at the correct level
+    // Note: We need to handle Estimation and Story Points separately since
+    // they need to be added as additionalFields to avoid format issues
+    const baseCustomFields = request.customFields ? { ...request.customFields } : {};
+
+    // Create the subtask issue first (without estimation/storyPoints in customFields)
     const createRequest: CreateIssueRequest = {
       project: parentIssue.project.id,
       summary: request.summary,
@@ -1170,10 +1188,41 @@ export class YouTrackClient {
       assignee: request.assignee,
       priority: request.priority,
       type: request.type,
-      customFields: Object.keys(customFields).length > 0 ? customFields : undefined
+      customFields: Object.keys(baseCustomFields).length > 0 ? baseCustomFields : undefined
     };
 
     const subtask = await this.createIssue(createRequest);
+
+    // Update estimation and story points after creation if provided
+    // This uses proper $type formatting at the custom field level
+    let updatedSubtask = subtask;
+    if (request.estimationMinutes !== undefined || request.storyPoints !== undefined) {
+      const updateFields: any[] = [];
+
+      if (request.estimationMinutes !== undefined) {
+        updateFields.push({
+          name: 'Estimation',
+          value: { minutes: request.estimationMinutes },
+          $type: 'PeriodIssueCustomField'
+        });
+      }
+
+      if (request.storyPoints !== undefined) {
+        updateFields.push({
+          name: 'Story Points',
+          value: request.storyPoints,
+          $type: 'SimpleIssueCustomField'
+        });
+      }
+
+      if (updateFields.length > 0) {
+        const response = await this.makeRequest(() =>
+          this.client.post(`/issues/${subtask.idReadable}?fields=id,idReadable,summary,description,project(id,name,shortName),reporter(id,login,fullName),assignee(id,login,fullName),created,updated,numberInProject,customFields(id,name,value(id,name,login,fullName,minutes,presentation))`,
+            { customFields: updateFields })
+        );
+        updatedSubtask = this.mapIssueResponse(response.data);
+      }
+    }
 
     // Find an appropriate subtask link type dynamically
     const { linkType, direction } = await this.findSubtaskLinkType();
@@ -1181,11 +1230,11 @@ export class YouTrackClient {
     // Create the subtask link - parent links to subtask
     const link = await this.createIssueLink(request.parentIssueId, {
       linkType: linkType,
-      targetIssue: subtask.idReadable,
+      targetIssue: updatedSubtask.idReadable,
       direction: direction
     });
 
-    return { subtask, link };
+    return { subtask: updatedSubtask, link };
   }
 
   /**
