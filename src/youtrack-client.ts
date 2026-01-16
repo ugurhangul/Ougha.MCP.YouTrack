@@ -441,10 +441,19 @@ export class YouTrackClient {
       console.log('Creating issue with data:', JSON.stringify(issueData, null, 2));
     }
 
-    const response = await this.makeRequest(() =>
-      this.client.post('/issues?fields=id,idReadable,summary,description,project(id,name,shortName),reporter(id,login,fullName),assignee(id,login,fullName),created,updated,numberInProject,customFields(id,name,value(id,name,login,fullName))', issueData)
-    );
-    return this.mapIssueResponse(response.data);
+    try {
+      const response = await this.makeRequest(() =>
+        this.client.post('/issues?fields=id,idReadable,summary,description,project(id,name,shortName),reporter(id,login,fullName),assignee(id,login,fullName),created,updated,numberInProject,customFields(id,name,value(id,name,login,fullName))', issueData)
+      );
+      return this.mapIssueResponse(response.data);
+    } catch (error: any) {
+      // Enhanced error logging
+      console.error('Failed to create issue. Request data was:', JSON.stringify(issueData, null, 2));
+      if (error.response?.data) {
+        console.error('YouTrack API error response:', JSON.stringify(error.response.data, null, 2));
+      }
+      throw error;
+    }
   }
 
   /**
@@ -1181,6 +1190,7 @@ export class YouTrackClient {
     const baseCustomFields = request.customFields ? { ...request.customFields } : {};
 
     // Create the subtask issue first (without estimation/storyPoints in customFields)
+    // Note: Type field is optional - some projects may not have it configured
     const createRequest: CreateIssueRequest = {
       project: parentIssue.project.id,
       summary: request.summary,
@@ -1191,7 +1201,23 @@ export class YouTrackClient {
       customFields: Object.keys(baseCustomFields).length > 0 ? baseCustomFields : undefined
     };
 
-    const subtask = await this.createIssue(createRequest);
+    let subtask: YouTrackIssue;
+    try {
+      subtask = await this.createIssue(createRequest);
+    } catch (error: any) {
+      // If the error is related to the Type field not being available, retry without it
+      const errorMessage = error.response?.data?.error_description || error.message || '';
+      if (errorMessage.includes('incompatible') && errorMessage.toLowerCase().includes('type')) {
+        if (this.config.debug) {
+          console.log('Type field not available in project, retrying without type...');
+        }
+        // Retry without type field
+        const retryRequest = { ...createRequest, type: undefined };
+        subtask = await this.createIssue(retryRequest);
+      } else {
+        throw error;
+      }
+    }
 
     // Update estimation and story points after creation if provided
     // This uses proper $type formatting at the custom field level
