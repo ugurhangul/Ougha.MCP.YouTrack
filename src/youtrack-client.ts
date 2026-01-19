@@ -380,8 +380,17 @@ export class YouTrackClient {
         } else if (name === 'Start Date' || name === 'Due Date' || name.toLowerCase().includes('date')) {
           fieldType = 'DateIssueCustomField';
           formattedValue = typeof value === 'number' ? value : value;
+        } else if (name === 'Layer') {
+          // Layer is a multi-enum field - value can be a single string or array of strings
+          fieldType = 'MultiEnumIssueCustomField';
+          const values = Array.isArray(value) ? value : [value];
+          formattedValue = values.map((v: string) => ({ name: v }));
+        } else if (name === 'Service' || name === 'Target Scope') {
+          // Single-enum fields
+          fieldType = 'SingleEnumIssueCustomField';
+          formattedValue = { name: value };
         } else if (typeof value === 'string') {
-          // Enum fields expect value as { name: <string> }
+          // Other enum fields expect value as { name: <string> }
           formattedValue = { name: value };
         }
 
