@@ -1282,7 +1282,9 @@ export class YouTrackClient {
    */
   async getSubtasks(parentIssueId: string, includeCompleted: boolean = false): Promise<SubtaskInfo[]> {
     const links = await this.getIssueLinks(parentIssueId);
-    const subtasks: SubtaskInfo[] = [];
+    
+    // Collect all subtask issue IDs first
+    const subtaskIssueIds: string[] = [];
 
     for (const link of links) {
       const linkTypeName = (link.linkType.localizedName || link.linkType.name).toLowerCase();
@@ -1304,66 +1306,94 @@ export class YouTrackClient {
       if (isParentChildLink) {
         for (const linkedIssue of link.issues) {
           if (linkedIssue.idReadable !== parentIssueId) {
-            // Get full issue details
-            const fullIssue = await this.getIssue(linkedIssue.idReadable);
-
-            // Check if we should include completed issues
-            const isCompleted = fullIssue.customFields?.find(f => f.name.toLowerCase() === 'state')?.value?.isResolved || false;
-            if (!includeCompleted && isCompleted) {
-              continue;
-            }
-
-            // Extract relevant information
-            const subtaskInfo: SubtaskInfo = {
-              id: fullIssue.id,
-              idReadable: fullIssue.idReadable,
-              summary: fullIssue.summary,
-              description: fullIssue.description,
-              assignee: fullIssue.assignee,
-              created: fullIssue.created,
-              updated: fullIssue.updated,
-              resolved: fullIssue.resolved,
-              parentIssue: {
-                id: parentIssueId,
-                idReadable: parentIssueId,
-                summary: '' // Will be filled if needed
-              }
-            };
-
-            // Extract custom field information
-            if (fullIssue.customFields) {
-              for (const field of fullIssue.customFields) {
-                const fieldName = field.name.toLowerCase();
-
-                if (fieldName === 'priority' && field.value) {
-                  subtaskInfo.priority = { id: field.value.id || '', name: field.value.name || field.value };
-                } else if (fieldName === 'state' && field.value) {
-                  subtaskInfo.state = {
-                    id: field.value.id || '',
-                    name: field.value.name || field.value,
-                    isResolved: field.value.isResolved || false
-                  };
-                } else if (fieldName === 'type' && field.value) {
-                  subtaskInfo.type = { id: field.value.id || '', name: field.value.name || field.value };
-                } else if (fieldName === 'estimation' && field.value) {
-                  subtaskInfo.estimation = {
-                    minutes: field.value.minutes || 0,
-                    presentation: field.value.presentation || '0m'
-                  };
-                } else if (fieldName === 'spent time' && field.value) {
-                  subtaskInfo.spentTime = {
-                    minutes: field.value.minutes || 0,
-                    presentation: field.value.presentation || '0m'
-                  };
-                } else if (fieldName === 'story points' && field.value) {
-                  subtaskInfo.storyPoints = typeof field.value === 'number' ? field.value : parseInt(field.value.toString(), 10);
-                }
-              }
-            }
-
-            subtasks.push(subtaskInfo);
+            subtaskIssueIds.push(linkedIssue.idReadable);
           }
         }
+      }
+    }
+
+    if (subtaskIssueIds.length === 0) {
+      return [];
+    }
+
+    // Fetch all subtask details in parallel (with concurrency limit to avoid rate limiting)
+    const CONCURRENCY_LIMIT = 5;
+    const subtasks: SubtaskInfo[] = [];
+    
+    for (let i = 0; i < subtaskIssueIds.length; i += CONCURRENCY_LIMIT) {
+      const batch = subtaskIssueIds.slice(i, i + CONCURRENCY_LIMIT);
+      const batchResults = await Promise.all(
+        batch.map(async (issueId) => {
+          try {
+            const fullIssue = await this.getIssue(issueId);
+            return fullIssue;
+          } catch (error) {
+            if (this.config.debug) {
+              console.error(`Failed to fetch subtask ${issueId}:`, error);
+            }
+            return null;
+          }
+        })
+      );
+
+      for (const fullIssue of batchResults) {
+        if (!fullIssue) continue;
+
+        // Check if we should include completed issues
+        const isCompleted = fullIssue.customFields?.find(f => f.name.toLowerCase() === 'state')?.value?.isResolved || false;
+        if (!includeCompleted && isCompleted) {
+          continue;
+        }
+
+        // Extract relevant information
+        const subtaskInfo: SubtaskInfo = {
+          id: fullIssue.id,
+          idReadable: fullIssue.idReadable,
+          summary: fullIssue.summary,
+          description: fullIssue.description,
+          assignee: fullIssue.assignee,
+          created: fullIssue.created,
+          updated: fullIssue.updated,
+          resolved: fullIssue.resolved,
+          parentIssue: {
+            id: parentIssueId,
+            idReadable: parentIssueId,
+            summary: '' // Will be filled if needed
+          }
+        };
+
+        // Extract custom field information
+        if (fullIssue.customFields) {
+          for (const field of fullIssue.customFields) {
+            const fieldName = field.name.toLowerCase();
+
+            if (fieldName === 'priority' && field.value) {
+              subtaskInfo.priority = { id: field.value.id || '', name: field.value.name || field.value };
+            } else if (fieldName === 'state' && field.value) {
+              subtaskInfo.state = {
+                id: field.value.id || '',
+                name: field.value.name || field.value,
+                isResolved: field.value.isResolved || false
+              };
+            } else if (fieldName === 'type' && field.value) {
+              subtaskInfo.type = { id: field.value.id || '', name: field.value.name || field.value };
+            } else if (fieldName === 'estimation' && field.value) {
+              subtaskInfo.estimation = {
+                minutes: field.value.minutes || 0,
+                presentation: field.value.presentation || '0m'
+              };
+            } else if (fieldName === 'spent time' && field.value) {
+              subtaskInfo.spentTime = {
+                minutes: field.value.minutes || 0,
+                presentation: field.value.presentation || '0m'
+              };
+            } else if (fieldName === 'story points' && field.value) {
+              subtaskInfo.storyPoints = typeof field.value === 'number' ? field.value : parseInt(field.value.toString(), 10);
+            }
+          }
+        }
+
+        subtasks.push(subtaskInfo);
       }
     }
 
@@ -1436,39 +1466,50 @@ export class YouTrackClient {
       }));
     }
 
-    // Create each subtask
-    for (const subtaskData of request.subtasks) {
-      try {
-        const subtaskRequest: CreateSubtaskRequest = {
-          parentIssueId: request.parentIssueId,
-          summary: subtaskData.summary,
-          description: subtaskData.description,
-          assignee: subtaskData.assignee,
-          priority: subtaskData.priority,
-          type: subtaskData.type,
-          estimationMinutes: subtaskData.estimationMinutes,
-          storyPoints: subtaskData.storyPoints,
-          customFields: subtaskData.customFields
-        };
+    // Create subtasks in parallel batches (limit concurrency to avoid rate limiting)
+    const CONCURRENCY_LIMIT = 3;
+    
+    for (let i = 0; i < request.subtasks.length; i += CONCURRENCY_LIMIT) {
+      const batch = request.subtasks.slice(i, i + CONCURRENCY_LIMIT);
+      
+      const batchResults = await Promise.all(
+        batch.map(async (subtaskData) => {
+          try {
+            const subtaskRequest: CreateSubtaskRequest = {
+              parentIssueId: request.parentIssueId,
+              summary: subtaskData.summary,
+              description: subtaskData.description,
+              assignee: subtaskData.assignee,
+              priority: subtaskData.priority,
+              type: subtaskData.type,
+              estimationMinutes: subtaskData.estimationMinutes,
+              storyPoints: subtaskData.storyPoints,
+              customFields: subtaskData.customFields
+            };
 
-        const result = await this.createSubtask(subtaskRequest);
+            const result = await this.createSubtask(subtaskRequest);
 
-        results.push({
-          success: true,
-          subtask: result.subtask,
-          link: result.link,
-          summary: subtaskData.summary
-        });
+            return {
+              success: true,
+              subtask: result.subtask,
+              link: result.link,
+              summary: subtaskData.summary
+            };
+          } catch (error: any) {
+            return {
+              success: false,
+              summary: subtaskData.summary,
+              error: error.message
+            };
+          }
+        })
+      );
 
-        // Add small delay between creations to avoid rate limiting
-        await delay(200);
-
-      } catch (error: any) {
-        results.push({
-          success: false,
-          summary: subtaskData.summary,
-          error: error.message
-        });
+      results.push(...batchResults);
+      
+      // Small delay between batches to be respectful of rate limits
+      if (i + CONCURRENCY_LIMIT < request.subtasks.length) {
+        await delay(100);
       }
     }
 
