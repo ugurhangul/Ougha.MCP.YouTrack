@@ -61,7 +61,7 @@ export class YouTrackClient {
       }
     });
 
-    // Add response interceptor for rate limiting
+    // Add response interceptor for rate limiting and error enhancement
     this.client.interceptors.response.use(
       (response) => {
         this.updateRateLimitInfo(response.headers);
@@ -71,6 +71,14 @@ export class YouTrackClient {
         if (error.response) {
           this.updateRateLimitInfo(error.response.headers);
           this.handleApiError(error);
+          
+          // Enhance error with meaningful message from YouTrack API
+          const apiError = error.response.data;
+          if (apiError) {
+            const errorMessage = apiError.error_description || apiError.error || apiError.message || 
+                                (typeof apiError === 'string' ? apiError : JSON.stringify(apiError));
+            error.message = `YouTrack API Error (${error.response.status}): ${errorMessage}`;
+          }
         }
         return Promise.reject(error);
       }
@@ -451,10 +459,12 @@ export class YouTrackClient {
       );
       return this.mapIssueResponse(response.data);
     } catch (error: any) {
-      // Enhanced error logging
-      console.error('Failed to create issue. Request data was:', JSON.stringify(issueData, null, 2));
-      if (error.response?.data) {
-        console.error('YouTrack API error response:', JSON.stringify(error.response.data, null, 2));
+      // Enhanced error logging for debugging
+      if (this.config.debug) {
+        console.error('Failed to create issue. Request data was:', JSON.stringify(issueData, null, 2));
+        if (error.response?.data) {
+          console.error('YouTrack API error response:', JSON.stringify(error.response.data, null, 2));
+        }
       }
       throw error;
     }

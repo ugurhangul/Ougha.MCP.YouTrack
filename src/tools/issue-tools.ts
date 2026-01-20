@@ -70,10 +70,8 @@ export async function createIssue(client: YouTrackClient, params: z.infer<typeof
     }
 
     if (params.storyPoints !== undefined) {
-      customFields['Story Points'] = {
-        value: params.storyPoints,
-        $type: 'SimpleIssueCustomField'
-      };
+      // Just pass the number directly - mergeCustomFields handles the formatting
+      customFields['Story Points'] = params.storyPoints;
     }
 
     const createRequest: CreateIssueRequest = {
@@ -222,10 +220,8 @@ export async function updateIssue(client: YouTrackClient, params: z.infer<typeof
     }
 
     if (params.storyPoints !== undefined) {
-      customFields['Story Points'] = {
-        value: params.storyPoints,
-        $type: 'SimpleIssueCustomField'
-      };
+      // Just pass the number directly - mergeCustomFields handles the formatting
+      customFields['Story Points'] = params.storyPoints;
     }
 
     const updateRequest: UpdateIssueRequest = {
