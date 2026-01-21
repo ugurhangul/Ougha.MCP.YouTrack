@@ -55,34 +55,172 @@ export const deleteIssueSchema = z.object({
 });
 
 /**
+ * dynamically build create issue schema based on available custom fields
+ */
+/**
+ * Helper to normalize field names for CLI arguments (camelCase)
+ */
+function normalizeFieldName(name: string): string {
+  return name.charAt(0).toLowerCase() + name.slice(1).replace(/\s+/g, '');
+}
+
+// Helper to extract values from custom field instances
+function getFieldValuesDescription(field: any): string {
+  if (!field.instances || !Array.isArray(field.instances)) return '';
+  
+  const values = new Set<string>();
+  field.instances.forEach((instance: any) => {
+    if (instance.bundle && instance.bundle.values && Array.isArray(instance.bundle.values)) {
+      instance.bundle.values.forEach((val: any) => {
+        if (val.name) values.add(val.name);
+      });
+    }
+  });
+
+  if (values.size === 0) return '';
+  // Limit to reasonable amount to avoid blowing up context
+  const valuesList = Array.from(values).sort().slice(0, 50).join(', ');
+  return ` Possible values: [${valuesList}]`;
+}
+
+/**
+ * Dynamically build create issue schema based on available custom fields
+ */
+export function buildCreateIssueSchema(customFields: Array<{ name: string; fieldType: { valueType: string } }> = []) {
+  // Only strictly required/standard API fields remain here
+  const baseSchema = {
+    project: z.string().describe('Project ID or short name'),
+    summary: z.string().describe('Issue summary/title'),
+    description: z.string().optional().describe('Issue description'),
+    parentIssue: z.string().optional().describe('Parent issue ID to create this as a subtask (e.g., PROJECT-123)'),
+    // We allow an explicit customFields object as an escape hatch, though we prefer top-level args
+    customFields: z.record(z.any()).optional().describe('Explicit custom field values map (advanced usage)')
+  };
+
+  const dynamicShape: Record<string, z.ZodTypeAny> = { ...baseSchema };
+
+  customFields.forEach(field => {
+    const normalizedName = normalizeFieldName(field.name);
+    
+    // If it's a base field (e.g. "State", "Priority"), enrich its description with values
+    if (normalizedName in baseSchema) {
+      if (!baseSchema[normalizedName as keyof typeof baseSchema]) return;
+      
+      const valuesDesc = getFieldValuesDescription(field);
+      if (valuesDesc) {
+        const existingDesc = (baseSchema[normalizedName as keyof typeof baseSchema] as any).description;
+        dynamicShape[normalizedName] = (baseSchema[normalizedName as keyof typeof baseSchema] as any).describe(`${existingDesc}.${valuesDesc}`);
+      }
+      return;
+    }
+
+    const valueType = field.fieldType.valueType.toLowerCase();
+    const valuesDesc = getFieldValuesDescription(field);
+    
+    // Map YouTrack types to Zod types
+    if (['integer', 'float', 'period'].includes(valueType)) {
+      dynamicShape[normalizedName] = z.number().optional().describe(`${field.name} (${valueType}).${valuesDesc}`);
+    } else {
+      // Default to string for everything else (enums, users, states, dates, etc.)
+      dynamicShape[normalizedName] = z.string().optional().describe(`${field.name} (${valueType}).${valuesDesc}`);
+    }
+  });
+
+  return z.object(dynamicShape);
+}
+
+/**
+ * Helper to smart-map params to custom fields based on metadata
+ */
+function mapDynamicParamsToCustomFields(
+  params: Record<string, any>, 
+  metadata: Array<{ name: string; fieldType: { valueType: string } }>
+): Record<string, any> {
+  const mappedFields: Record<string, any> = {};
+  const standardKeys = ['project', 'summary', 'description', 'parentIssue', 'issueId', 'customFields'];
+
+  // Create a lookup map: normalizedName -> metadata
+  const fieldLookup = new Map(metadata.map(f => [normalizeFieldName(f.name), f]));
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (standardKeys.includes(key) || value === undefined) return;
+
+    // Check if this param corresponds to a known custom field
+    const fieldMeta = fieldLookup.get(key);
+
+    if (fieldMeta) {
+      const { name, fieldType } = fieldMeta;
+      const type = fieldType.valueType.toLowerCase();
+
+      // Smart formatting based on type
+      if (type === 'period') {
+        // YouTrack expects period fields as { minutes: number }
+        mappedFields[name] = { minutes: value };
+      } 
+      else if (type.startsWith('user')) {
+        // Users are set by ID or login usually, needs wrapping if string
+        mappedFields[name] = { id: value }; // YouTrackClient usually handles this, but being explicit is good
+      }
+      else if (type === 'date' || type === 'date and time') {
+        mappedFields[name] = value;
+      }
+      else if (['integer', 'float', 'string', 'text'].includes(type)) {
+        // Simple scalar values
+        mappedFields[name] = value;
+      } 
+      else {
+        // Enums, States, Builds, Versions, etc. usually expect { name: "Value" }
+        // The YouTrackClient's mergeCustomFields also does this, but we can prepare it here.
+        // However, passing just the value relies on YouTrackClient to wrap it in {name: ...}
+        // which it does for unknown types.
+        mappedFields[name] = value; 
+      }
+    } else {
+      // Fallback: If passed a param that isn't in metadata but was in the input (maybe from a loose schema?),
+      // pass it through. This supports fields we might have missed in metadata fetch.
+      // We assume Key is the Field Name if not found in normalized map.
+      mappedFields[key] = value;
+    }
+  });
+
+  // Merge in any explicit customFields passed
+  if (params.customFields) {
+    Object.assign(mappedFields, params.customFields);
+  }
+
+  return mappedFields;
+}
+
+/**
  * Create a new issue
  */
-export async function createIssue(client: YouTrackClient, params: z.infer<typeof createIssueSchema>) {
+export async function createIssue(
+  client: YouTrackClient, 
+  params: Record<string, any>,
+  fieldMetadata: Array<{ name: string; fieldType: { valueType: string } }> = []
+) {
   try {
-    // Prepare custom fields including estimation and story points if provided
-    let customFields = params.customFields || {};
-
-    if (params.estimationMinutes !== undefined) {
-      customFields['Estimation'] = {
-        minutes: params.estimationMinutes,
-        $type: 'PeriodIssueCustomField'
-      };
-    }
-
-    if (params.storyPoints !== undefined) {
-      // Just pass the number directly - mergeCustomFields handles the formatting
-      customFields['Story Points'] = params.storyPoints;
-    }
-
+    // Separate standard fields
     const createRequest: CreateIssueRequest = {
       project: params.project,
       summary: params.summary,
       description: params.description,
-      assignee: params.assignee,
-      priority: params.priority,
-      type: params.type,
-      customFields: Object.keys(customFields).length > 0 ? customFields : undefined
     };
+
+    // Map everything else to customFields
+    const customFields = mapDynamicParamsToCustomFields(params, fieldMetadata);
+    
+    // Project QM Hack: Suppress 'Type' if it exists and is 'Task' and project is QM
+    // This logic needs to check the Real Name "Type" now.
+    const isProjectQM = params.project === 'QM' || params.project === '0-1';
+    if (isProjectQM && customFields['Type'] === 'Task') {
+      delete customFields['Type'];
+    }
+
+    // Assign mapped custom fields
+    if (Object.keys(customFields).length > 0) {
+      createRequest.customFields = customFields;
+    }
 
     const issue = await client.createIssue(createRequest);
 
@@ -105,11 +243,8 @@ export async function createIssue(client: YouTrackClient, params: z.infer<typeof
               text: `✅ Successfully created issue ${issue.idReadable}, but failed to link as subtask:\n\n` +
                     `**Summary:** ${issue.summary}\n` +
                     `**Project:** ${issue.project.name} (${issue.project.shortName})\n` +
-                    `**Reporter:** ${issue.reporter?.fullName || 'Unknown'}\n` +
-                    `**Assignee:** ${issue.assignee?.fullName || 'Unassigned'}\n` +
                     `**Created:** ${new Date(issue.created).toLocaleString()}\n\n` +
-                    `❌ **Subtask Link Failed:** ${linkError.message}\n` +
-                    `You can manually create the subtask relationship using the create-issue-link tool.`
+                    `❌ **Subtask Link Failed:** ${linkError.message}\n`
             }
           ],
           isError: true
@@ -117,17 +252,13 @@ export async function createIssue(client: YouTrackClient, params: z.infer<typeof
       }
     }
 
-    const issueType = params.parentIssue ? 'subtask' : 'issue';
-
     return {
       content: [
         {
           type: "text" as const,
-          text: `Successfully created ${issueType} ${issue.idReadable}:\n\n` +
+          text: `Successfully created ${params.parentIssue ? 'subtask' : 'issue'} ${issue.idReadable}:\n\n` +
                 `**Summary:** ${issue.summary}\n` +
                 `**Project:** ${issue.project.name} (${issue.project.shortName})\n` +
-                `**Reporter:** ${issue.reporter?.fullName || 'Unknown'}\n` +
-                `**Assignee:** ${issue.assignee?.fullName || 'Unassigned'}\n` +
                 `**Created:** ${new Date(issue.created).toLocaleString()}${linkInfo}\n` +
                 (issue.description ? `\n**Description:**\n${issue.description}` : '')
         }
@@ -147,47 +278,24 @@ export async function createIssue(client: YouTrackClient, params: z.infer<typeof
 }
 
 /**
- * Get issue by ID
+ * Get issue details by ID
  */
 export async function getIssue(client: YouTrackClient, params: z.infer<typeof getIssueSchema>) {
   try {
     const issue = await client.getIssue(params.issueId);
-    
-    let customFieldsText = '';
-    if (issue.customFields && issue.customFields.length > 0) {
-      customFieldsText = '\n**Custom Fields:**\n' +
-        issue.customFields.map(field => `- ${field.name}: ${formatCustomFieldValue(field)}`).join('\n');
-    }
-
-    let tagsText = '';
-    if (issue.tags && issue.tags.length > 0) {
-      tagsText = '\n**Tags:** ' + issue.tags.map(tag => tag.name).join(', ');
-    }
-
-    let commentsText = '';
-    if (issue.comments && issue.comments.length > 0) {
-      commentsText = '\n\n**Recent Comments:**\n' +
-        issue.comments.slice(-3).map(comment => 
-          `- ${comment.author.fullName} (${new Date(comment.created).toLocaleString()}): ${comment.text}`
-        ).join('\n');
-    }
 
     return {
       content: [
         {
           type: "text" as const,
-          text: `**Issue ${issue.idReadable}**\n\n` +
-                `**Summary:** ${issue.summary}\n` +
+          text: `**${issue.idReadable}** - ${issue.summary}\n` +
                 `**Project:** ${issue.project.name} (${issue.project.shortName})\n` +
-                `**Reporter:** ${issue.reporter?.fullName || 'Unknown'}\n` +
+                `**State:** ${issue.customFields?.find(f => f.name === 'State')?.value?.name || 'Unknown'}\n` +
                 `**Assignee:** ${issue.assignee?.fullName || 'Unassigned'}\n` +
-                `**Created:** ${formatDate(issue.created)}\n` +
-                `**Updated:** ${formatDate(issue.updated)}\n` +
-                (issue.resolved ? `**Resolved:** ${formatDate(issue.resolved)}\n` : '') +
-                (issue.description ? `\n**Description:**\n${issue.description}\n` : '') +
-                customFieldsText +
-                tagsText +
-                commentsText
+                `**Priority:** ${issue.customFields?.find(f => f.name === 'Priority')?.value?.name || 'Unknown'}\n` +
+                `**Created:** ${new Date(issue.created).toLocaleString()}\n` +
+                `**Updated:** ${new Date(issue.updated).toLocaleString()}\n` +
+                (issue.description ? `\n**Description:**\n${issue.description}` : '')
         }
       ]
     };
@@ -205,31 +313,60 @@ export async function getIssue(client: YouTrackClient, params: z.infer<typeof ge
 }
 
 /**
+ * Dynamically build update issue schema based on available custom fields
+ */
+export function buildUpdateIssueSchema(customFields: Array<{ name: string; fieldType: { valueType: string } }> = []) {
+  const baseSchema = {
+    issueId: z.string().describe('Issue ID (e.g., PROJECT-123)'),
+    summary: z.string().optional().describe('New issue summary/title'),
+    description: z.string().optional().describe('New issue description'),
+    customFields: z.record(z.any()).optional().describe('Explicit custom field values map')
+  };
+
+  const dynamicShape: Record<string, z.ZodTypeAny> = { ...baseSchema };
+
+  customFields.forEach(field => {
+    const normalizedName = normalizeFieldName(field.name);
+    // If it's a base field (e.g. "State", "Priority"), enrich its description with values
+    if (normalizedName in baseSchema) {
+      if (!baseSchema[normalizedName as keyof typeof baseSchema]) return;
+      
+      const valuesDesc = getFieldValuesDescription(field);
+      if (valuesDesc) {
+        const existingDesc = (baseSchema[normalizedName as keyof typeof baseSchema] as any).description;
+        dynamicShape[normalizedName] = (baseSchema[normalizedName as keyof typeof baseSchema] as any).describe(`${existingDesc}.${valuesDesc}`);
+      }
+      return;
+    }
+
+    const valueType = field.fieldType.valueType.toLowerCase();
+    const valuesDesc = getFieldValuesDescription(field);
+    
+    if (['integer', 'float', 'period'].includes(valueType)) {
+      dynamicShape[normalizedName] = z.number().optional().describe(`${field.name} (${valueType}).${valuesDesc}`);
+    } else {
+      dynamicShape[normalizedName] = z.string().optional().describe(`${field.name} (${valueType}).${valuesDesc}`);
+    }
+  });
+
+  return z.object(dynamicShape);
+}
+
+/**
  * Update an existing issue
  */
-export async function updateIssue(client: YouTrackClient, params: z.infer<typeof updateIssueSchema>) {
+export async function updateIssue(
+  client: YouTrackClient, 
+  params: Record<string, any>,
+  fieldMetadata: Array<{ name: string; fieldType: { valueType: string } }> = []
+) {
   try {
-    // Prepare custom fields including estimation and story points if provided
-    let customFields = params.customFields || {};
-
-    if (params.estimationMinutes !== undefined) {
-      customFields['Estimation'] = {
-        minutes: params.estimationMinutes,
-        $type: 'PeriodIssueCustomField'
-      };
-    }
-
-    if (params.storyPoints !== undefined) {
-      // Just pass the number directly - mergeCustomFields handles the formatting
-      customFields['Story Points'] = params.storyPoints;
-    }
+    const customFields = mapDynamicParamsToCustomFields(params, fieldMetadata);
 
     const updateRequest: UpdateIssueRequest = {
       summary: params.summary,
       description: params.description,
-      assignee: params.assignee,
-      state: params.state,
-      priority: params.priority,
+      // All other fields are now handled via customFields map
       customFields: Object.keys(customFields).length > 0 ? customFields : undefined
     };
 
@@ -245,9 +382,7 @@ export async function updateIssue(client: YouTrackClient, params: z.infer<typeof
           text: `Successfully updated issue ${issue.idReadable}:\n\n` +
                 `**Summary:** ${issue.summary}\n` +
                 `**Project:** ${issue.project.name} (${issue.project.shortName})\n` +
-                `**Assignee:** ${issue.assignee?.fullName || 'Unassigned'}\n` +
-                `**Updated:** ${formatDate(issue.updated)}\n\n` +
-                `*Note: Changes may take a moment to appear in search results.*`
+                `**Updated:** ${formatDate(issue.updated)}\n`
         }
       ]
     };

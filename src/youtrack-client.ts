@@ -260,6 +260,33 @@ export class YouTrackClient {
   }
 
   /**
+   * Get all accessible custom fields from the server
+   * Used for dynamic tool schema generation
+   */
+  async getAccessibleCustomFields(): Promise<Array<{ 
+    name: string; 
+    fieldType: { valueType: string };
+    instances?: Array<{
+      bundle?: {
+        values?: Array<{
+          name: string;
+          description?: string;
+        }>
+      }
+    }>
+  }>> {
+    try {
+      const response = await this.makeRequest(() =>
+        this.client.get('/admin/customFieldSettings/customFields?fields=name,fieldType(valueType),instances(bundle(values(name,description)))&$top=500')
+      );
+      return response.data;
+    } catch (error) {
+      console.warn('Failed to fetch custom fields for schema generation:', error);
+      return [];
+    }
+  }
+
+  /**
    * Search issues
    */
   async searchIssues(searchRequest: SearchIssuesRequest): Promise<YouTrackSearchResult<YouTrackIssue>> {

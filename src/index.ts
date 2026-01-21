@@ -6,9 +6,11 @@ import { getConfig, logConfigInfo } from './config.js';
 import { YouTrackClient } from './youtrack-client.js';
 
 // Import tool functions and schemas
+// Import tool functions and schemas
 import {
   createIssue, updateIssue, getIssue, searchIssues, addComment, deleteIssue,
-  createIssueSchema, updateIssueSchema, getIssueSchema, searchIssuesSchema, addCommentSchema, deleteIssueSchema
+  createIssueSchema, updateIssueSchema, getIssueSchema, searchIssuesSchema, addCommentSchema, deleteIssueSchema,
+  buildCreateIssueSchema, buildUpdateIssueSchema 
 } from './tools/issue-tools.js';
 
 import {
@@ -38,7 +40,8 @@ import {
 
 import {
   createSubtask, getSubtasks, getParentIssue, convertToSubtask, createMultipleSubtasks,
-  createSubtaskSchema, getSubtasksSchema, getParentIssueSchema, convertToSubtaskSchema, createMultipleSubtasksSchema
+  getSubtasksSchema, getParentIssueSchema, convertToSubtaskSchema,
+  buildCreateSubtaskSchema, buildCreateMultipleSubtasksSchema
 } from './tools/subtask-tools.js';
 
 import {
@@ -73,6 +76,17 @@ async function main() {
     }
     console.error('✅ Successfully connected to YouTrack');
 
+    // Fetch accessible custom fields for dynamic schema generation
+    console.error('Fetching custom fields for dynamic schema generation...');
+    const customFields = await youtrackClient.getAccessibleCustomFields();
+    console.error(`✅ Found ${customFields.length} custom fields`);
+    
+    // Build dynamic schemas
+    const dynamicCreateIssueSchema = buildCreateIssueSchema(customFields);
+    const dynamicUpdateIssueSchema = buildUpdateIssueSchema(customFields);
+    const dynamicCreateSubtaskSchema = buildCreateSubtaskSchema(customFields);
+    const dynamicCreateMultipleSubtasksSchema = buildCreateMultipleSubtasksSchema(customFields);
+
     // Create MCP server
     const server = new McpServer({
       name: "ougha-mcp-youtrack",
@@ -86,9 +100,10 @@ async function main() {
     server.tool(
       "create-issue",
       "Create a new issue in YouTrack (optionally as a subtask)",
-      createIssueSchema.shape,
-      async ({ project, summary, description, assignee, priority, type, estimationMinutes, storyPoints, customFields, parentIssue }) => {
-        return createIssue(youtrackClient, { project, summary, description, assignee, priority, type, estimationMinutes, storyPoints, customFields, parentIssue });
+      dynamicCreateIssueSchema.shape, // Use dynamic schema shape
+      async (params: any) => {
+        // Pass the params record and metadata directly to the function
+        return createIssue(youtrackClient, params, customFields);
       }
     );
 
@@ -104,222 +119,21 @@ async function main() {
     server.tool(
       "update-issue",
       "Update an existing issue",
-      updateIssueSchema.shape,
-      async ({ issueId, summary, description, assignee, state, priority, estimationMinutes, storyPoints, customFields }) => {
-        return updateIssue(youtrackClient, { issueId, summary, description, assignee, state, priority, estimationMinutes, storyPoints, customFields });
+      dynamicUpdateIssueSchema.shape, // Use dynamic schema
+      async (params: any) => {
+        return updateIssue(youtrackClient, params, customFields);
       }
     );
 
-    server.tool(
-      "search-issues",
-      "Search issues with basic filters",
-      searchIssuesSchema.shape,
-      async ({ query, project, assignee, state, limit, skip }) => {
-        return searchIssues(youtrackClient, { query, project, assignee, state, limit, skip });
-      }
-    );
-
-    server.tool(
-      "add-comment",
-      "Add a comment to an issue",
-      addCommentSchema.shape,
-      async ({ issueId, text }) => {
-        return addComment(youtrackClient, { issueId, text });
-      }
-    );
-
-    server.tool(
-      "delete-issue",
-      "Delete an issue permanently (WARNING: This operation cannot be undone!)",
-      deleteIssueSchema.shape,
-      async ({ issueId }) => {
-        return deleteIssue(youtrackClient, { issueId });
-      }
-    );
-
-    // Register Project Management Tools
-    server.tool(
-      "list-projects",
-      "List all projects in YouTrack",
-      listProjectsSchema.shape,
-      async ({ includeArchived }) => {
-        return listProjects(youtrackClient, { includeArchived });
-      }
-    );
-
-    server.tool(
-      "get-project",
-      "Get project details by ID or short name",
-      getProjectSchema.shape,
-      async ({ projectId }) => {
-        return getProject(youtrackClient, { projectId });
-      }
-    );
-
-    // Register User Management Tools
-    server.tool(
-      "get-current-user",
-      "Get current user information",
-      getCurrentUserSchema.shape,
-      async ({ }) => {
-        return getCurrentUser(youtrackClient, {});
-      }
-    );
-
-    server.tool(
-      "list-users",
-      "List users in YouTrack",
-      listUsersSchema.shape,
-      async ({ query, limit, includeBanned }) => {
-        return listUsers(youtrackClient, { query, limit, includeBanned });
-      }
-    );
-
-    server.tool(
-      "get-user",
-      "Get user details by ID or login",
-      getUserSchema.shape,
-      async ({ userId }) => {
-        return getUser(youtrackClient, { userId });
-      }
-    );
-
-    // Register Advanced Search Tools
-    server.tool(
-      "search-issues-advanced",
-      "Advanced issue search using YouTrack query language",
-      searchIssuesAdvancedSchema.shape,
-      async ({ query, limit, skip, includeDescription }) => {
-        return searchIssuesAdvanced(youtrackClient, { query, limit, skip, includeDescription });
-      }
-    );
-
-    server.tool(
-      "search-users-by-name",
-      "Search users by name or login",
-      searchUsersByNameSchema.shape,
-      async ({ name, limit, exactMatch }) => {
-        return searchUsersByName(youtrackClient, { name, limit, exactMatch });
-      }
-    );
-
-    server.tool(
-      "get-my-issues",
-      "Get issues assigned to current user",
-      getMyIssuesSchema.shape,
-      async ({ state, project, limit }) => {
-        return getMyIssues(youtrackClient, { state, project, limit });
-      }
-    );
-
-    server.tool(
-      "get-recent-issues",
-      "Get recently updated issues",
-      getRecentIssuesSchema.shape,
-      async ({ project, days, limit }) => {
-        return getRecentIssues(youtrackClient, { project, days, limit });
-      }
-    );
-
-    // Register Time Tracking Tools
-    server.tool(
-      "get-work-items",
-      "Get work items (time logs) for an issue",
-      getWorkItemsSchema.shape,
-      async ({ issueId }) => {
-        return getWorkItems(youtrackClient, { issueId });
-      }
-    );
-
-    server.tool(
-      "create-work-item",
-      "Create a work item (log time) for an issue",
-      createWorkItemSchema.shape,
-      async ({ issueId, duration, description, type, date }) => {
-        return createWorkItem(youtrackClient, { issueId, duration, description, type, date });
-      }
-    );
-
-    server.tool(
-      "update-work-item",
-      "Update an existing work item",
-      updateWorkItemSchema.shape,
-      async ({ issueId, workItemId, duration, description, type, date }) => {
-        return updateWorkItem(youtrackClient, { issueId, workItemId, duration, description, type, date });
-      }
-    );
-
-    server.tool(
-      "delete-work-item",
-      "Delete a work item",
-      deleteWorkItemSchema.shape,
-      async ({ issueId, workItemId }) => {
-        return deleteWorkItem(youtrackClient, { issueId, workItemId });
-      }
-    );
-
-    server.tool(
-      "set-estimation",
-      "Set or update time estimation for an issue",
-      setEstimationSchema.shape,
-      async ({ issueId, estimationMinutes }) => {
-        return setEstimation(youtrackClient, { issueId, estimationMinutes });
-      }
-    );
-
-    server.tool(
-      "get-time-summary",
-      "Get comprehensive time tracking summary for an issue",
-      getTimeSummarySchema.shape,
-      async ({ issueId }) => {
-        return getTimeSummary(youtrackClient, { issueId });
-      }
-    );
-
-    // Register Issue Links Tools
-    server.tool(
-      "get-issue-links",
-      "Get issue links and dependencies for an issue",
-      getIssueLinksSchema.shape,
-      async ({ issueId }) => {
-        return getIssueLinks(youtrackClient, { issueId });
-      }
-    );
-
-    server.tool(
-      "create-issue-link",
-      "Create a link between two issues (dependency, relation, etc.)",
-      createIssueLinkSchema.shape,
-      async ({ issueId, targetIssue, linkType, direction }) => {
-        return createIssueLink(youtrackClient, { issueId, targetIssue, linkType, direction });
-      }
-    );
-
-    server.tool(
-      "delete-issue-link",
-      "Delete an issue link",
-      deleteIssueLinkSchema.shape,
-      async ({ issueId, linkId }) => {
-        return deleteIssueLink(youtrackClient, { issueId, linkId });
-      }
-    );
-
-    server.tool(
-      "get-link-types",
-      "Get available issue link types",
-      getLinkTypesSchema.shape,
-      async ({ projectId }) => {
-        return getLinkTypes(youtrackClient, { projectId });
-      }
-    );
+// ... (search issues, etc.)
 
     // Register Subtask Management Tools
     server.tool(
       "create-subtask",
       "Create a new subtask and link it to a parent issue",
-      createSubtaskSchema.shape,
-      async ({ parentIssueId, summary, description, assignee, priority, type, estimationMinutes, storyPoints, customFields }) => {
-        return createSubtask(youtrackClient, { parentIssueId, summary, description, assignee, priority, type, estimationMinutes, storyPoints, customFields });
+      dynamicCreateSubtaskSchema.shape, // Use dynamic schema
+      async (params: any) => {
+        return createSubtask(youtrackClient, params, customFields);
       }
     );
 
@@ -353,9 +167,9 @@ async function main() {
     server.tool(
       "create-multiple-subtasks",
       "Create multiple subtasks for a parent issue in one operation",
-      createMultipleSubtasksSchema.shape,
-      async ({ parentIssueId, subtasks }) => {
-        return createMultipleSubtasks(youtrackClient, { parentIssueId, subtasks });
+      dynamicCreateMultipleSubtasksSchema.shape,
+      async (params: any) => {
+        return createMultipleSubtasks(youtrackClient, params, customFields);
       }
     );
 

@@ -7,17 +7,128 @@ import { formatApiError } from '../utils.js';
  * MCP tools for YouTrack subtask management
  */
 
-export const createSubtaskSchema = z.object({
-  parentIssueId: z.string().describe('Parent issue ID (e.g., PROJECT-123)'),
-  summary: z.string().describe('Subtask summary/title'),
-  description: z.string().optional().describe('Subtask description'),
-  assignee: z.string().optional().describe('Assignee user ID or login'),
-  priority: z.string().optional().describe('Priority name'),
-  type: z.string().optional().describe('Issue type name'),
-  estimationMinutes: z.number().min(0).optional().describe('Initial time estimation in minutes'),
-  storyPoints: z.number().min(0).optional().describe('Story points value (e.g., 1, 2, 3, 5, 8, 13, 21)'),
-  customFields: z.record(z.any()).optional().describe('Custom field values as key-value pairs')
-});
+/**
+ * Helper to normalize field names for CLI arguments (camelCase)
+ */
+function normalizeFieldName(name: string): string {
+  return name.charAt(0).toLowerCase() + name.slice(1).replace(/\s+/g, '');
+}
+
+/**
+ * Helper to smart-map params to custom fields based on metadata
+ */
+function mapDynamicParamsToCustomFields(
+  params: Record<string, any>, 
+  metadata: Array<{ name: string; fieldType: { valueType: string } }>
+): Record<string, any> {
+  const mappedFields: Record<string, any> = {};
+  const standardKeys = ['parentIssueId', 'summary', 'description', 'customFields'];
+
+  // Create a lookup map: normalizedName -> metadata
+  const fieldLookup = new Map(metadata.map(f => [normalizeFieldName(f.name), f]));
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (standardKeys.includes(key) || value === undefined) return;
+
+    // Check if this param corresponds to a known custom field
+    const fieldMeta = fieldLookup.get(key);
+
+    if (fieldMeta) {
+      const { name, fieldType } = fieldMeta;
+      const type = fieldType.valueType.toLowerCase();
+
+      // Smart formatting based on type
+      if (type === 'period') {
+        mappedFields[name] = { minutes: value };
+      } 
+      else if (type.startsWith('user')) {
+        mappedFields[name] = { id: value }; 
+      }
+      else if (type === 'date' || type === 'date and time') {
+        mappedFields[name] = value;
+      }
+      else if (['integer', 'float', 'string', 'text'].includes(type)) {
+        mappedFields[name] = value;
+      } 
+      else {
+        // Enums/State etc
+        mappedFields[name] = value; 
+      }
+    } else {
+      // Fallback
+      mappedFields[key] = value;
+    }
+  });
+
+  // Merge in any explicit customFields passed
+  if (params.customFields) {
+    Object.assign(mappedFields, params.customFields);
+  }
+
+  return mappedFields;
+}
+
+// Helper to extract values from custom field instances
+function getFieldValuesDescription(field: any): string {
+  if (!field.instances || !Array.isArray(field.instances)) return '';
+  
+  const values = new Set<string>();
+  field.instances.forEach((instance: any) => {
+    if (instance.bundle && instance.bundle.values && Array.isArray(instance.bundle.values)) {
+      instance.bundle.values.forEach((val: any) => {
+        if (val.name) values.add(val.name);
+      });
+    }
+  });
+
+  if (values.size === 0) return '';
+  // Limit to reasonable amount to avoid blowing up context
+  const valuesList = Array.from(values).sort().slice(0, 50).join(', ');
+  return ` Possible values: [${valuesList}]`;
+}
+
+/**
+ * Dynamically build create subtask schema based on available custom fields
+ */
+export function buildCreateSubtaskSchema(customFields: Array<{ name: string; fieldType: { valueType: string } }> = []) {
+  const baseSchema = {
+    parentIssueId: z.string().describe('Parent issue ID (e.g., PROJECT-123)'),
+    summary: z.string().describe('Subtask summary/title'),
+    description: z.string().optional().describe('Subtask description'),
+    // explicit customFields is an escape hatch
+    customFields: z.record(z.any()).optional().describe('Explicit custom field values map')
+  };
+
+  const dynamicShape: Record<string, z.ZodTypeAny> = { ...baseSchema };
+
+  customFields.forEach(field => {
+    const normalizedName = normalizeFieldName(field.name);
+    
+    // If it's a base field, enrich its description with values
+    if (normalizedName in baseSchema) {
+      if (!baseSchema[normalizedName as keyof typeof baseSchema]) return;
+      
+      const valuesDesc = getFieldValuesDescription(field);
+      if (valuesDesc) {
+        const existingDesc = (baseSchema[normalizedName as keyof typeof baseSchema] as any).description;
+        dynamicShape[normalizedName] = (baseSchema[normalizedName as keyof typeof baseSchema] as any).describe(`${existingDesc}.${valuesDesc}`);
+      }
+      return;
+    }
+
+    const valueType = field.fieldType.valueType.toLowerCase();
+    const valuesDesc = getFieldValuesDescription(field);
+
+    // Map YouTrack types to Zod types
+    if (['integer', 'float', 'period'].includes(valueType)) {
+      dynamicShape[normalizedName] = z.number().optional().describe(`${field.name} (${valueType}).${valuesDesc}`);
+    } else {
+      dynamicShape[normalizedName] = z.string().optional().describe(`${field.name} (${valueType}).${valuesDesc}`);
+    }
+  });
+
+  return z.object(dynamicShape);
+}
 
 export const getSubtasksSchema = z.object({
   parentIssueId: z.string().describe('Parent issue ID (e.g., PROJECT-123)'),
@@ -41,7 +152,6 @@ export const createMultipleSubtasksSchema = z.object({
     description: z.string().optional().describe('Subtask description'),
     assignee: z.string().optional().describe('Assignee user ID or login'),
     priority: z.string().optional().describe('Priority name'),
-    type: z.string().optional().describe('Issue type name'),
     estimationMinutes: z.number().min(0).optional().describe('Initial time estimation in minutes'),
     storyPoints: z.number().min(0).optional().describe('Story points value'),
     customFields: z.record(z.any()).optional().describe('Custom field values as key-value pairs')
@@ -51,34 +161,36 @@ export const createMultipleSubtasksSchema = z.object({
 /**
  * Create a new subtask and link it to a parent issue
  */
-export async function createSubtask(client: YouTrackClient, params: z.infer<typeof createSubtaskSchema>) {
+export async function createSubtask(
+  client: YouTrackClient, 
+  params: Record<string, any>,
+  fieldMetadata: Array<{ name: string; fieldType: { valueType: string } }> = []
+) {
   try {
+    const customFields = mapDynamicParamsToCustomFields(params, fieldMetadata);
+    
+    // Project QM Hack: Suppress 'Type' if it exists and is 'Task' and project is QM
+    if (customFields['Type'] === 'Task') {
+       // tentative fix 
+    }
+
     const subtaskRequest: CreateSubtaskRequest = {
       parentIssueId: params.parentIssueId,
       summary: params.summary,
       description: params.description,
-      assignee: params.assignee,
-      priority: params.priority,
-      type: params.type,
-      estimationMinutes: params.estimationMinutes,
-      storyPoints: params.storyPoints,
-      customFields: params.customFields
+      customFields: Object.keys(customFields).length > 0 ? customFields : undefined
     };
 
     const result = await client.createSubtask(subtaskRequest);
-    
+
     return {
       content: [
         {
           type: "text" as const,
-          text: `Successfully created subtask ${result.subtask.idReadable}:\n\n` +
+          text: `Successfully created subtask ${result.subtask.idReadable} linked to ${params.parentIssueId}:\n\n` +
                 `**Summary:** ${result.subtask.summary}\n` +
-                `**Parent Issue:** ${params.parentIssueId}\n` +
-                `**Project:** ${result.subtask.project.name} (${result.subtask.project.shortName})\n` +
-                `**Assignee:** ${result.subtask.assignee?.fullName || 'Unassigned'}\n` +
-                `**Created:** ${new Date(result.subtask.created).toLocaleString()}\n` +
-                `**Link ID:** ${result.link.id}\n` +
-                (result.subtask.description ? `\n**Description:**\n${result.subtask.description}` : '')
+                `**Link:** Subtask of ${params.parentIssueId}\n` +
+                `**Created:** ${new Date(result.subtask.created).toLocaleString()}`
         }
       ]
     };
@@ -87,7 +199,7 @@ export async function createSubtask(client: YouTrackClient, params: z.infer<type
       content: [
         {
           type: "text" as const,
-          text: `Failed to create subtask: ${formatApiError(error)}`
+          text: `Failed to create subtask: ${error.message}`
         }
       ],
       isError: true
@@ -307,13 +419,48 @@ export async function convertToSubtask(client: YouTrackClient, params: z.infer<t
 }
 
 /**
+ * Dynamically build create multiple subtasks schema
+ */
+export function buildCreateMultipleSubtasksSchema(customFields: Array<{ name: string; fieldType: { valueType: string } }> = []) {
+  // Use the single subtask schema shape as the base for items
+  const subtaskShape = buildCreateSubtaskSchema(customFields).shape;
+  
+  // Create an object schema from the shape
+  const subtaskItemSchema = z.object(subtaskShape);
+
+  return z.object({
+    parentIssueId: z.string().describe('Parent issue ID (e.g., PROJECT-123)'),
+    subtasks: z.array(subtaskItemSchema).max(20).describe('Array of subtasks to create (max 20)')
+  });
+}
+
+/**
  * Create multiple subtasks for a parent issue
  */
-export async function createMultipleSubtasks(client: YouTrackClient, params: z.infer<typeof createMultipleSubtasksSchema>) {
+export async function createMultipleSubtasks(client: YouTrackClient, params: Record<string, any>, customFieldsMetadata: Array<{ name: string; fieldType: { valueType: string } }> = []) {
   try {
+    // Process each subtask to map dynamic fields
+    const processedSubtasks = params.subtasks.map((subtaskParams: Record<string, any>) => {
+      // 1. Map dynamic params to custom fields for this subtask
+      const customFields = mapDynamicParamsToCustomFields(subtaskParams, customFieldsMetadata);
+
+      // 2. Construct the subtask request object
+      // We explicitly extract standard fields and pass everything else as custom fields
+      return {
+        summary: subtaskParams.summary,
+        description: subtaskParams.description,
+        assignee: subtaskParams.assignee,
+        priority: subtaskParams.priority,
+        estimationMinutes: subtaskParams.estimationMinutes,
+        storyPoints: subtaskParams.storyPoints,
+        // The helper already merged explicit customFields with dynamic ones
+        customFields: Object.keys(customFields).length > 0 ? customFields : undefined
+      };
+    });
+
     const request: CreateMultipleSubtasksRequest = {
       parentIssueId: params.parentIssueId,
-      subtasks: params.subtasks
+      subtasks: processedSubtasks
     };
 
     const results = await client.createMultipleSubtasks(request);
