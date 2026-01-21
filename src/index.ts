@@ -8,8 +8,8 @@ import { YouTrackClient } from './youtrack-client.js';
 // Import tool functions and schemas
 // Import tool functions and schemas
 import {
-  createIssue, updateIssue, getIssue, searchIssues, addComment, deleteIssue,
-  createIssueSchema, updateIssueSchema, getIssueSchema, searchIssuesSchema, addCommentSchema, deleteIssueSchema,
+  createIssue, updateIssue, getIssue, searchIssues, getAllIssues, addComment, deleteIssue,
+  createIssueSchema, updateIssueSchema, getIssueSchema, searchIssuesSchema, getAllIssuesSchema, addCommentSchema, deleteIssueSchema,
   buildCreateIssueSchema, buildUpdateIssueSchema 
 } from './tools/issue-tools.js';
 
@@ -113,6 +113,15 @@ async function main() {
       getIssueSchema.shape,
       async ({ issueId }) => {
         return getIssue(youtrackClient, { issueId });
+      }
+    );
+
+    server.tool(
+      "get-all-issues",
+      "Get all issues for a project with pagination support",
+      getAllIssuesSchema.shape,
+      async ({ project, includeResolved, onlyResolved, limit, skip }) => {
+        return getAllIssues(youtrackClient, { project, includeResolved, onlyResolved, limit, skip });
       }
     );
 

@@ -45,6 +45,14 @@ export const searchIssuesSchema = z.object({
   skip: z.number().min(0).default(0).describe('Number of issues to skip for pagination')
 });
 
+export const getAllIssuesSchema = z.object({
+  project: z.string().describe('Project ID or short name (required)'),
+  includeResolved: z.boolean().default(false).describe('Include resolved/closed issues'),
+  onlyResolved: z.boolean().default(false).describe('Get only resolved/closed issues'),
+  limit: z.number().min(1).max(500).default(100).describe('Maximum number of issues to return'),
+  skip: z.number().min(0).default(0).describe('Number of issues to skip for pagination')
+});
+
 export const addCommentSchema = z.object({
   issueId: z.string().describe('Issue ID (e.g., PROJECT-123)'),
   text: z.string().describe('Comment text')
@@ -475,6 +483,84 @@ export async function searchIssues(client: YouTrackClient, params: z.infer<typeo
         {
           type: "text" as const,
           text: `Failed to search issues: ${error.message}`
+        }
+      ],
+      isError: true
+    };
+  }
+}
+
+/**
+ * Get all issues for a project
+ */
+export async function getAllIssues(client: YouTrackClient, params: z.infer<typeof getAllIssuesSchema>) {
+  try {
+    // Build query string for project filtering
+    let query = `project: ${params.project}`;
+    
+    // Add state filter based on resolved preferences
+    if (params.onlyResolved) {
+      query += ' #Resolved';
+    } else if (!params.includeResolved) {
+      query += ' State: -Resolved State: -Done State: -Closed';
+    }
+
+    const searchRequest: SearchIssuesRequest = {
+      query,
+      limit: params.limit,
+      skip: params.skip
+    };
+
+    const result = await client.searchIssues(searchRequest);
+    
+    if (result.items.length === 0) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `No issues found in project ${params.project}.`
+          }
+        ]
+      };
+    }
+
+    const issuesText = result.items.map(issue => {
+      // Extract state from custom fields
+      const stateField = issue.customFields?.find(f => f.name === 'State' || f.name === 'Stage');
+      const state = stateField?.value?.name || 'Unknown';
+      
+      // Extract priority from custom fields
+      const priorityField = issue.customFields?.find(f => f.name === 'Priority');
+      const priority = priorityField?.value?.name || '-';
+
+      // Extract story points from custom fields
+      const storyPointsField = issue.customFields?.find(field => field.name === 'Story Points');
+      const storyPoints = storyPointsField?.value ? ` (${storyPointsField.value} SP)` : '';
+
+      return `**${issue.idReadable}** - ${issue.summary}\n` +
+             `  State: ${state} | Priority: ${priority}${storyPoints}\n` +
+             `  Assignee: ${issue.assignee?.fullName || 'Unassigned'}\n` +
+             `  Updated: ${new Date(issue.updated).toLocaleString()}`;
+    }).join('\n\n');
+
+    const paginationInfo = result.hasMore 
+      ? `\n\n---\n_Showing ${params.skip + 1}-${params.skip + result.items.length} issues. More available with skip=${params.skip + params.limit}_`
+      : '';
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `**Project ${params.project}**: Found ${result.items.length} issue(s)${result.totalCount ? ` of ${result.totalCount} total` : ''}${result.hasMore ? ' (more available)' : ''}:\n\n${issuesText}${paginationInfo}`
+        }
+      ]
+    };
+  } catch (error: any) {
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `Failed to get issues: ${error.message}`
         }
       ],
       isError: true
