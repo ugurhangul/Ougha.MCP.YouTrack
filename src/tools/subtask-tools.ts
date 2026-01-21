@@ -70,16 +70,25 @@ function mapDynamicParamsToCustomFields(
 
 // Helper to extract values from custom field instances
 function getFieldValuesDescription(field: any): string {
-  if (!field.instances || !Array.isArray(field.instances)) return '';
-  
   const values = new Set<string>();
-  field.instances.forEach((instance: any) => {
-    if (instance.bundle && instance.bundle.values && Array.isArray(instance.bundle.values)) {
-      instance.bundle.values.forEach((val: any) => {
-        if (val.name) values.add(val.name);
-      });
-    }
-  });
+
+  // 1. Try fetching from project instances
+  if (field.instances && Array.isArray(field.instances)) {
+    field.instances.forEach((instance: any) => {
+      if (instance.bundle && instance.bundle.values && Array.isArray(instance.bundle.values)) {
+        instance.bundle.values.forEach((val: any) => {
+          if (val.name) values.add(val.name);
+        });
+      }
+    });
+  }
+
+  // 2. Fallback to default bundle (Global fields like Type, State often live here)
+  if (values.size === 0 && field.defaultBundle && field.defaultBundle.values && Array.isArray(field.defaultBundle.values)) {
+    field.defaultBundle.values.forEach((val: any) => {
+      if (val.name) values.add(val.name);
+    });
+  }
 
   if (values.size === 0) return '';
   // Limit to reasonable amount to avoid blowing up context
@@ -103,21 +112,25 @@ export function buildCreateSubtaskSchema(customFields: Array<{ name: string; fie
 
   customFields.forEach(field => {
     const normalizedName = normalizeFieldName(field.name);
-    
+    const valueType = field.fieldType.valueType.toLowerCase();
+    const valuesDesc = getFieldValuesDescription(field);
+
+    // Dynamic Filter: Skip fields that require values but have none
+    const requiresValues = ['enum', 'state', 'version', 'build', 'ownedfield'];
+    if (requiresValues.includes(valueType) && !valuesDesc) {
+      return;
+    }
+
     // If it's a base field, enrich its description with values
     if (normalizedName in baseSchema) {
       if (!baseSchema[normalizedName as keyof typeof baseSchema]) return;
       
-      const valuesDesc = getFieldValuesDescription(field);
       if (valuesDesc) {
         const existingDesc = (baseSchema[normalizedName as keyof typeof baseSchema] as any).description;
         dynamicShape[normalizedName] = (baseSchema[normalizedName as keyof typeof baseSchema] as any).describe(`${existingDesc}.${valuesDesc}`);
       }
       return;
     }
-
-    const valueType = field.fieldType.valueType.toLowerCase();
-    const valuesDesc = getFieldValuesDescription(field);
 
     // Map YouTrack types to Zod types
     if (['integer', 'float', 'period'].includes(valueType)) {

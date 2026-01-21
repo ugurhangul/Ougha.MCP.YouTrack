@@ -273,11 +273,17 @@ export class YouTrackClient {
           description?: string;
         }>
       }
-    }>
+    }>;
+    defaultBundle?: {
+      values?: Array<{
+        name: string;
+        description?: string;
+      }>
+    }
   }>> {
     try {
       const response = await this.makeRequest(() =>
-        this.client.get('/admin/customFieldSettings/customFields?fields=name,fieldType(valueType),instances(bundle(values(name,description)))&$top=500')
+        this.client.get('/admin/customFieldSettings/customFields?fields=name,fieldType(valueType),instances(bundle(values(name,description))),defaultBundle(values(name,description))&$top=500')
       );
       return response.data;
     } catch (error) {
