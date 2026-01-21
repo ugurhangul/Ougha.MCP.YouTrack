@@ -499,10 +499,11 @@ export async function getAllIssues(client: YouTrackClient, params: z.infer<typeo
     let query = `project: ${params.project}`;
     
     // Add state filter based on resolved preferences
+    // Use YouTrack's universal #Resolved/#Unresolved tags - works regardless of field naming (State vs Stage)
     if (params.onlyResolved) {
       query += ' #Resolved';
     } else if (!params.includeResolved) {
-      query += ' State: -Resolved State: -Done State: -Closed';
+      query += ' #Unresolved';
     }
 
     const searchRequest: SearchIssuesRequest = {
