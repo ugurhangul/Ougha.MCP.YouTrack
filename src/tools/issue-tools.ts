@@ -126,18 +126,18 @@ export function buildCreateIssueSchema(customFields: Array<{ name: string; field
     if (requiresValues.includes(valueType) && !valuesDesc) {
       return;
     }
-    
+
     // If it's a base field (e.g. "State", "Priority"), enrich its description with values
     if (normalizedName in baseSchema) {
       if (!baseSchema[normalizedName as keyof typeof baseSchema]) return;
-      
+
       if (valuesDesc) {
         const existingDesc = (baseSchema[normalizedName as keyof typeof baseSchema] as any).description;
         dynamicShape[normalizedName] = (baseSchema[normalizedName as keyof typeof baseSchema] as any).describe(`${existingDesc}.${valuesDesc}`);
       }
       return;
     }
-    
+
     // Map YouTrack types to Zod types
     if (['integer', 'float', 'period'].includes(valueType)) {
       dynamicShape[normalizedName] = z.number().optional().describe(`${field.name} (${valueType}).${valuesDesc}`);
@@ -154,7 +154,7 @@ export function buildCreateIssueSchema(customFields: Array<{ name: string; field
  * Helper to smart-map params to custom fields based on metadata
  */
 function mapDynamicParamsToCustomFields(
-  params: Record<string, any>, 
+  params: Record<string, any>,
   metadata: Array<{ name: string; fieldType: { valueType: string } }>
 ): Record<string, any> {
   const mappedFields: Record<string, any> = {};
@@ -177,7 +177,7 @@ function mapDynamicParamsToCustomFields(
       if (type === 'period') {
         // YouTrack expects period fields as { minutes: number }
         mappedFields[name] = { minutes: value };
-      } 
+      }
       else if (type.startsWith('user')) {
         // Users are set by ID or login usually, needs wrapping if string
         mappedFields[name] = { id: value }; // YouTrackClient usually handles this, but being explicit is good
@@ -188,13 +188,13 @@ function mapDynamicParamsToCustomFields(
       else if (['integer', 'float', 'string', 'text'].includes(type)) {
         // Simple scalar values
         mappedFields[name] = value;
-      } 
+      }
       else {
         // Enums, States, Builds, Versions, etc. usually expect { name: "Value" }
         // The YouTrackClient's mergeCustomFields also does this, but we can prepare it here.
         // However, passing just the value relies on YouTrackClient to wrap it in {name: ...}
         // which it does for unknown types.
-        mappedFields[name] = value; 
+        mappedFields[name] = value;
       }
     } else {
       // Fallback: If passed a param that isn't in metadata but was in the input (maybe from a loose schema?),
@@ -216,7 +216,7 @@ function mapDynamicParamsToCustomFields(
  * Create a new issue
  */
 export async function createIssue(
-  client: YouTrackClient, 
+  client: YouTrackClient,
   params: Record<string, any>,
   fieldMetadata: Array<{ name: string; fieldType: { valueType: string } }> = []
 ) {
@@ -230,7 +230,7 @@ export async function createIssue(
 
     // Map everything else to customFields
     const customFields = mapDynamicParamsToCustomFields(params, fieldMetadata);
-    
+
     // Project QM Hack: Suppress 'Type' if it exists and is 'Task' and project is QM
     // This logic needs to check the Real Name "Type" now.
     const isProjectQM = params.project === 'QM' || params.project === '0-1';
@@ -262,10 +262,10 @@ export async function createIssue(
             {
               type: "text" as const,
               text: `✅ Successfully created issue ${issue.idReadable}, but failed to link as subtask:\n\n` +
-                    `**Summary:** ${issue.summary}\n` +
-                    `**Project:** ${issue.project.name} (${issue.project.shortName})\n` +
-                    `**Created:** ${new Date(issue.created).toLocaleString()}\n\n` +
-                    `❌ **Subtask Link Failed:** ${linkError.message}\n`
+                `**Summary:** ${issue.summary}\n` +
+                `**Project:** ${issue.project.name} (${issue.project.shortName})\n` +
+                `**Created:** ${new Date(issue.created).toLocaleString()}\n\n` +
+                `❌ **Subtask Link Failed:** ${linkError.message}\n`
             }
           ],
           isError: true
@@ -278,10 +278,10 @@ export async function createIssue(
         {
           type: "text" as const,
           text: `Successfully created ${params.parentIssue ? 'subtask' : 'issue'} ${issue.idReadable}:\n\n` +
-                `**Summary:** ${issue.summary}\n` +
-                `**Project:** ${issue.project.name} (${issue.project.shortName})\n` +
-                `**Created:** ${new Date(issue.created).toLocaleString()}${linkInfo}\n` +
-                (issue.description ? `\n**Description:**\n${issue.description}` : '')
+            `**Summary:** ${issue.summary}\n` +
+            `**Project:** ${issue.project.name} (${issue.project.shortName})\n` +
+            `**Created:** ${new Date(issue.created).toLocaleString()}${linkInfo}\n` +
+            (issue.description ? `\n**Description:**\n${issue.description}` : '')
         }
       ]
     };
@@ -305,18 +305,31 @@ export async function getIssue(client: YouTrackClient, params: z.infer<typeof ge
   try {
     const issue = await client.getIssue(params.issueId);
 
+    // Format comments if present
+    let commentsSection = '';
+    if (issue.comments && issue.comments.length > 0) {
+      const activeComments = issue.comments.filter(c => !c.deleted);
+      if (activeComments.length > 0) {
+        commentsSection = `\n\n**Comments (${activeComments.length}):**\n` +
+          activeComments.map(c =>
+            `---\n**${c.author?.fullName || c.author?.login || 'Unknown'}** - ${new Date(c.created).toLocaleString()}${c.updated ? ' (edited)' : ''}\n${c.text}`
+          ).join('\n');
+      }
+    }
+
     return {
       content: [
         {
           type: "text" as const,
           text: `**${issue.idReadable}** - ${issue.summary}\n` +
-                `**Project:** ${issue.project.name} (${issue.project.shortName})\n` +
-                `**State:** ${issue.customFields?.find(f => f.name === 'State')?.value?.name || 'Unknown'}\n` +
-                `**Assignee:** ${issue.assignee?.fullName || 'Unassigned'}\n` +
-                `**Priority:** ${issue.customFields?.find(f => f.name === 'Priority')?.value?.name || 'Unknown'}\n` +
-                `**Created:** ${new Date(issue.created).toLocaleString()}\n` +
-                `**Updated:** ${new Date(issue.updated).toLocaleString()}\n` +
-                (issue.description ? `\n**Description:**\n${issue.description}` : '')
+            `**Project:** ${issue.project.name} (${issue.project.shortName})\n` +
+            `**State:** ${issue.customFields?.find(f => f.name === 'State')?.value?.name || 'Unknown'}\n` +
+            `**Assignee:** ${issue.assignee?.fullName || 'Unassigned'}\n` +
+            `**Priority:** ${issue.customFields?.find(f => f.name === 'Priority')?.value?.name || 'Unknown'}\n` +
+            `**Created:** ${new Date(issue.created).toLocaleString()}\n` +
+            `**Updated:** ${new Date(issue.updated).toLocaleString()}\n` +
+            (issue.description ? `\n**Description:**\n${issue.description}` : '') +
+            commentsSection
         }
       ]
     };
@@ -360,14 +373,14 @@ export function buildUpdateIssueSchema(customFields: Array<{ name: string; field
     // If it's a base field (e.g. "State", "Priority"), enrich its description with values
     if (normalizedName in baseSchema) {
       if (!baseSchema[normalizedName as keyof typeof baseSchema]) return;
-      
+
       if (valuesDesc) {
         const existingDesc = (baseSchema[normalizedName as keyof typeof baseSchema] as any).description;
         dynamicShape[normalizedName] = (baseSchema[normalizedName as keyof typeof baseSchema] as any).describe(`${existingDesc}.${valuesDesc}`);
       }
       return;
     }
-    
+
     if (['integer', 'float', 'period'].includes(valueType)) {
       dynamicShape[normalizedName] = z.number().optional().describe(`${field.name} (${valueType}).${valuesDesc}`);
     } else {
@@ -382,7 +395,7 @@ export function buildUpdateIssueSchema(customFields: Array<{ name: string; field
  * Update an existing issue
  */
 export async function updateIssue(
-  client: YouTrackClient, 
+  client: YouTrackClient,
   params: Record<string, any>,
   fieldMetadata: Array<{ name: string; fieldType: { valueType: string } }> = []
 ) {
@@ -406,9 +419,9 @@ export async function updateIssue(
         {
           type: "text" as const,
           text: `Successfully updated issue ${issue.idReadable}:\n\n` +
-                `**Summary:** ${issue.summary}\n` +
-                `**Project:** ${issue.project.name} (${issue.project.shortName})\n` +
-                `**Updated:** ${formatDate(issue.updated)}\n`
+            `**Summary:** ${issue.summary}\n` +
+            `**Project:** ${issue.project.name} (${issue.project.shortName})\n` +
+            `**Updated:** ${formatDate(issue.updated)}\n`
         }
       ]
     };
@@ -440,7 +453,7 @@ export async function searchIssues(client: YouTrackClient, params: z.infer<typeo
     };
 
     const result = await client.searchIssues(searchRequest);
-    
+
     if (result.items.length === 0) {
       return {
         content: [
@@ -463,10 +476,10 @@ export async function searchIssues(client: YouTrackClient, params: z.infer<typeo
       }
 
       return `**${issue.idReadable}** - ${issue.summary}\n` +
-             `  Project: ${issue.project.shortName}\n` +
-             `  Assignee: ${issue.assignee?.fullName || 'Unassigned'}\n` +
-             `  Updated: ${new Date(issue.updated).toLocaleString()}` +
-             storyPointsText;
+        `  Project: ${issue.project.shortName}\n` +
+        `  Assignee: ${issue.assignee?.fullName || 'Unassigned'}\n` +
+        `  Updated: ${new Date(issue.updated).toLocaleString()}` +
+        storyPointsText;
     }).join('\n\n');
 
     return {
@@ -497,7 +510,7 @@ export async function getAllIssues(client: YouTrackClient, params: z.infer<typeo
   try {
     // Build query string for project filtering
     let query = `project: ${params.project}`;
-    
+
     // Add state filter based on resolved preferences
     // Use YouTrack's universal #Resolved/#Unresolved tags - works regardless of field naming (State vs Stage)
     if (params.onlyResolved) {
@@ -513,7 +526,7 @@ export async function getAllIssues(client: YouTrackClient, params: z.infer<typeo
     };
 
     const result = await client.searchIssues(searchRequest);
-    
+
     if (result.items.length === 0) {
       return {
         content: [
@@ -529,7 +542,7 @@ export async function getAllIssues(client: YouTrackClient, params: z.infer<typeo
       // Extract state from custom fields
       const stateField = issue.customFields?.find(f => f.name === 'State' || f.name === 'Stage');
       const state = stateField?.value?.name || 'Unknown';
-      
+
       // Extract priority from custom fields
       const priorityField = issue.customFields?.find(f => f.name === 'Priority');
       const priority = priorityField?.value?.name || '-';
@@ -539,12 +552,12 @@ export async function getAllIssues(client: YouTrackClient, params: z.infer<typeo
       const storyPoints = storyPointsField?.value ? ` (${storyPointsField.value} SP)` : '';
 
       return `**${issue.idReadable}** - ${issue.summary}\n` +
-             `  State: ${state} | Priority: ${priority}${storyPoints}\n` +
-             `  Assignee: ${issue.assignee?.fullName || 'Unassigned'}\n` +
-             `  Updated: ${new Date(issue.updated).toLocaleString()}`;
+        `  State: ${state} | Priority: ${priority}${storyPoints}\n` +
+        `  Assignee: ${issue.assignee?.fullName || 'Unassigned'}\n` +
+        `  Updated: ${new Date(issue.updated).toLocaleString()}`;
     }).join('\n\n');
 
-    const paginationInfo = result.hasMore 
+    const paginationInfo = result.hasMore
       ? `\n\n---\n_Showing ${params.skip + 1}-${params.skip + result.items.length} issues. More available with skip=${params.skip + params.limit}_`
       : '';
 
@@ -610,9 +623,9 @@ export async function deleteIssue(client: YouTrackClient, params: z.infer<typeof
         {
           type: "text" as const,
           text: `⚠️ **ISSUE DELETED** ⚠️\n\n` +
-                `Issue ${params.issueId} has been permanently deleted from YouTrack.\n\n` +
-                `**This action cannot be undone!**\n\n` +
-                `All associated data including comments, attachments, time tracking, and links have been removed.`
+            `Issue ${params.issueId} has been permanently deleted from YouTrack.\n\n` +
+            `**This action cannot be undone!**\n\n` +
+            `All associated data including comments, attachments, time tracking, and links have been removed.`
         }
       ]
     };
