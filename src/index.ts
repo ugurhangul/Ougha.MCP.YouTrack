@@ -10,7 +10,7 @@ import { YouTrackClient } from './youtrack-client.js';
 import {
   createIssue, updateIssue, getIssue, searchIssues, getAllIssues, addComment, deleteIssue,
   createIssueSchema, updateIssueSchema, getIssueSchema, searchIssuesSchema, getAllIssuesSchema, addCommentSchema, deleteIssueSchema,
-  buildCreateIssueSchema, buildUpdateIssueSchema 
+  buildCreateIssueSchema, buildUpdateIssueSchema
 } from './tools/issue-tools.js';
 
 import {
@@ -80,7 +80,7 @@ async function main() {
     console.error('Fetching custom fields for dynamic schema generation...');
     const customFields = await youtrackClient.getAccessibleCustomFields();
     console.error(`✅ Found ${customFields.length} custom fields`);
-    
+
     // Build dynamic schemas
     const dynamicCreateIssueSchema = buildCreateIssueSchema(customFields);
     const dynamicUpdateIssueSchema = buildUpdateIssueSchema(customFields);
@@ -134,7 +134,7 @@ async function main() {
       }
     );
 
-// ... (search issues, etc.)
+    // ... (search issues, etc.)
 
     // Register Subtask Management Tools
     server.tool(
@@ -253,6 +253,61 @@ async function main() {
       getTimelineConflictsSchema.shape,
       async ({ projectIds, assigneeIds }) => {
         return getTimelineConflicts(youtrackClient, { projectIds, assigneeIds });
+      }
+    );
+
+    // Register Time Tracking / Work Item Tools
+    server.tool(
+      "get-work-items",
+      "Get work items (time entries) for an issue",
+      getWorkItemsSchema.shape,
+      async ({ issueId }) => {
+        return getWorkItems(youtrackClient, { issueId });
+      }
+    );
+
+    server.tool(
+      "create-work-item",
+      "Create a work item (log time) for an issue",
+      createWorkItemSchema.shape,
+      async ({ issueId, duration, description, type, date }) => {
+        return createWorkItem(youtrackClient, { issueId, duration, description, type, date });
+      }
+    );
+
+    server.tool(
+      "update-work-item",
+      "Update an existing work item",
+      updateWorkItemSchema.shape,
+      async ({ issueId, workItemId, duration, description, type, date }) => {
+        return updateWorkItem(youtrackClient, { issueId, workItemId, duration, description, type, date });
+      }
+    );
+
+    server.tool(
+      "delete-work-item",
+      "Delete a work item from an issue",
+      deleteWorkItemSchema.shape,
+      async ({ issueId, workItemId }) => {
+        return deleteWorkItem(youtrackClient, { issueId, workItemId });
+      }
+    );
+
+    server.tool(
+      "set-estimation",
+      "Set estimation (in minutes) for an issue",
+      setEstimationSchema.shape,
+      async ({ issueId, estimationMinutes }) => {
+        return setEstimation(youtrackClient, { issueId, estimationMinutes });
+      }
+    );
+
+    server.tool(
+      "get-time-summary",
+      "Get time tracking summary for an issue (estimation, spent time, work items)",
+      getTimeSummarySchema.shape,
+      async ({ issueId }) => {
+        return getTimeSummary(youtrackClient, { issueId });
       }
     );
 
