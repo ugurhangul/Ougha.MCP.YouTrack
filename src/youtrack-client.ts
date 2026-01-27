@@ -114,6 +114,27 @@ export class YouTrackClient {
     }
   }
 
+  /**
+   * Wrap a promise with a timeout to prevent indefinite hangs
+   */
+  private withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        reject(new Error(`Operation "${operation}" timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      promise
+        .then((result) => {
+          clearTimeout(timeoutId);
+          resolve(result);
+        })
+        .catch((error) => {
+          clearTimeout(timeoutId);
+          reject(error);
+        });
+    });
+  }
+
   private async makeRequest<T>(requestFn: () => Promise<T>): Promise<T> {
     if (this.rateLimitInfo.remaining <= 0 && Date.now() < this.rateLimitInfo.resetTime) {
       // Add to queue if rate limited
@@ -289,13 +310,24 @@ export class YouTrackClient {
       }>
     }
   }>> {
+    const startTime = Date.now();
+    console.error('  → Fetching custom fields from YouTrack API...');
+
     try {
-      const response = await this.makeRequest(() =>
+      const request = this.makeRequest(() =>
         this.client.get('/admin/customFieldSettings/customFields?fields=name,fieldType(valueType),instances(project(id,name,shortName),bundle(values(name,description))),defaultBundle(values(name,description))&$top=500')
       );
+
+      // Apply 15-second timeout to prevent indefinite hangs
+      const response = await this.withTimeout(request, 15000, 'getAccessibleCustomFields');
+
+      const elapsed = Date.now() - startTime;
+      console.error(`  → Custom fields fetch completed in ${elapsed}ms`);
+
       return response.data;
-    } catch (error) {
-      console.warn('Failed to fetch custom fields for schema generation:', error);
+    } catch (error: any) {
+      const elapsed = Date.now() - startTime;
+      console.warn(`Failed to fetch custom fields after ${elapsed}ms:`, error.message || error);
       return [];
     }
   }
