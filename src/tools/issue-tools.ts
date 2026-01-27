@@ -72,32 +72,68 @@ function normalizeFieldName(name: string): string {
   return name.charAt(0).toLowerCase() + name.slice(1).replace(/\s+/g, '');
 }
 
-// Helper to extract values from custom field instances
+// Helper to extract values from custom field instances and group by project
 function getFieldValuesDescription(field: any): string {
-  const values = new Set<string>();
+  // Track values per project: Map<projectShortName | 'Global', Set<string>>
+  const projectValues = new Map<string, Set<string>>();
 
   // 1. Try fetching from project instances
   if (field.instances && Array.isArray(field.instances)) {
     field.instances.forEach((instance: any) => {
       if (instance.bundle && instance.bundle.values && Array.isArray(instance.bundle.values)) {
+        const projectKey = instance.project?.shortName || 'Unknown';
+
+        if (!projectValues.has(projectKey)) {
+          projectValues.set(projectKey, new Set<string>());
+        }
+
+        const projectSet = projectValues.get(projectKey)!;
         instance.bundle.values.forEach((val: any) => {
-          if (val.name) values.add(val.name);
+          if (val.name) projectSet.add(val.name);
         });
       }
     });
   }
 
   // 2. Fallback to default bundle (Global fields like Type, State often live here)
-  if (values.size === 0 && field.defaultBundle && field.defaultBundle.values && Array.isArray(field.defaultBundle.values)) {
+  if (projectValues.size === 0 && field.defaultBundle && field.defaultBundle.values && Array.isArray(field.defaultBundle.values)) {
+    const globalSet = new Set<string>();
     field.defaultBundle.values.forEach((val: any) => {
-      if (val.name) values.add(val.name);
+      if (val.name) globalSet.add(val.name);
     });
+    if (globalSet.size > 0) {
+      projectValues.set('Global', globalSet);
+    }
   }
 
-  if (values.size === 0) return '';
-  // Limit to reasonable amount to avoid blowing up context
-  const valuesList = Array.from(values).sort().slice(0, 50).join(', ');
-  return ` Possible values: [${valuesList}]`;
+  if (projectValues.size === 0) return '';
+
+  // Check if all projects have the same values - if so, show simple list
+  const allValueSets = Array.from(projectValues.values());
+  const allValuesMatch = allValueSets.length > 1 && allValueSets.every((set, _, arr) => {
+    const first = arr[0];
+    if (set.size !== first.size) return false;
+    for (const val of set) {
+      if (!first.has(val)) return false;
+    }
+    return true;
+  });
+
+  if (allValuesMatch || projectValues.size === 1) {
+    // All projects have same values or only one project - show simple list
+    const values = Array.from(projectValues.values())[0];
+    const valuesList = Array.from(values).sort().slice(0, 50).join(', ');
+    return ` Possible values: [${valuesList}]`;
+  }
+
+  // Projects have different values - show per-project breakdown
+  const projectDescriptions: string[] = [];
+  projectValues.forEach((values, projectKey) => {
+    const valuesList = Array.from(values).sort().slice(0, 25).join(', ');
+    projectDescriptions.push(`${projectKey}: [${valuesList}]`);
+  });
+
+  return ` Possible values: ${projectDescriptions.join('; ')}`;
 }
 
 /**

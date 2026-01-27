@@ -18,7 +18,7 @@ function normalizeFieldName(name: string): string {
  * Helper to smart-map params to custom fields based on metadata
  */
 function mapDynamicParamsToCustomFields(
-  params: Record<string, any>, 
+  params: Record<string, any>,
   metadata: Array<{ name: string; fieldType: { valueType: string } }>
 ): Record<string, any> {
   const mappedFields: Record<string, any> = {};
@@ -40,19 +40,19 @@ function mapDynamicParamsToCustomFields(
       // Smart formatting based on type
       if (type === 'period') {
         mappedFields[name] = { minutes: value };
-      } 
+      }
       else if (type.startsWith('user')) {
-        mappedFields[name] = { id: value }; 
+        mappedFields[name] = { id: value };
       }
       else if (type === 'date' || type === 'date and time') {
         mappedFields[name] = value;
       }
       else if (['integer', 'float', 'string', 'text'].includes(type)) {
         mappedFields[name] = value;
-      } 
+      }
       else {
         // Enums/State etc
-        mappedFields[name] = value; 
+        mappedFields[name] = value;
       }
     } else {
       // Fallback
@@ -68,32 +68,68 @@ function mapDynamicParamsToCustomFields(
   return mappedFields;
 }
 
-// Helper to extract values from custom field instances
+// Helper to extract values from custom field instances and group by project
 function getFieldValuesDescription(field: any): string {
-  const values = new Set<string>();
+  // Track values per project: Map<projectShortName | 'Global', Set<string>>
+  const projectValues = new Map<string, Set<string>>();
 
   // 1. Try fetching from project instances
   if (field.instances && Array.isArray(field.instances)) {
     field.instances.forEach((instance: any) => {
       if (instance.bundle && instance.bundle.values && Array.isArray(instance.bundle.values)) {
+        const projectKey = instance.project?.shortName || 'Unknown';
+
+        if (!projectValues.has(projectKey)) {
+          projectValues.set(projectKey, new Set<string>());
+        }
+
+        const projectSet = projectValues.get(projectKey)!;
         instance.bundle.values.forEach((val: any) => {
-          if (val.name) values.add(val.name);
+          if (val.name) projectSet.add(val.name);
         });
       }
     });
   }
 
   // 2. Fallback to default bundle (Global fields like Type, State often live here)
-  if (values.size === 0 && field.defaultBundle && field.defaultBundle.values && Array.isArray(field.defaultBundle.values)) {
+  if (projectValues.size === 0 && field.defaultBundle && field.defaultBundle.values && Array.isArray(field.defaultBundle.values)) {
+    const globalSet = new Set<string>();
     field.defaultBundle.values.forEach((val: any) => {
-      if (val.name) values.add(val.name);
+      if (val.name) globalSet.add(val.name);
     });
+    if (globalSet.size > 0) {
+      projectValues.set('Global', globalSet);
+    }
   }
 
-  if (values.size === 0) return '';
-  // Limit to reasonable amount to avoid blowing up context
-  const valuesList = Array.from(values).sort().slice(0, 50).join(', ');
-  return ` Possible values: [${valuesList}]`;
+  if (projectValues.size === 0) return '';
+
+  // Check if all projects have the same values - if so, show simple list
+  const allValueSets = Array.from(projectValues.values());
+  const allValuesMatch = allValueSets.length > 1 && allValueSets.every((set, _, arr) => {
+    const first = arr[0];
+    if (set.size !== first.size) return false;
+    for (const val of set) {
+      if (!first.has(val)) return false;
+    }
+    return true;
+  });
+
+  if (allValuesMatch || projectValues.size === 1) {
+    // All projects have same values or only one project - show simple list
+    const values = Array.from(projectValues.values())[0];
+    const valuesList = Array.from(values).sort().slice(0, 50).join(', ');
+    return ` Possible values: [${valuesList}]`;
+  }
+
+  // Projects have different values - show per-project breakdown
+  const projectDescriptions: string[] = [];
+  projectValues.forEach((values, projectKey) => {
+    const valuesList = Array.from(values).sort().slice(0, 25).join(', ');
+    projectDescriptions.push(`${projectKey}: [${valuesList}]`);
+  });
+
+  return ` Possible values: ${projectDescriptions.join('; ')}`;
 }
 
 /**
@@ -124,7 +160,7 @@ export function buildCreateSubtaskSchema(customFields: Array<{ name: string; fie
     // If it's a base field, enrich its description with values
     if (normalizedName in baseSchema) {
       if (!baseSchema[normalizedName as keyof typeof baseSchema]) return;
-      
+
       if (valuesDesc) {
         const existingDesc = (baseSchema[normalizedName as keyof typeof baseSchema] as any).description;
         dynamicShape[normalizedName] = (baseSchema[normalizedName as keyof typeof baseSchema] as any).describe(`${existingDesc}.${valuesDesc}`);
@@ -175,16 +211,16 @@ export const createMultipleSubtasksSchema = z.object({
  * Create a new subtask and link it to a parent issue
  */
 export async function createSubtask(
-  client: YouTrackClient, 
+  client: YouTrackClient,
   params: Record<string, any>,
   fieldMetadata: Array<{ name: string; fieldType: { valueType: string } }> = []
 ) {
   try {
     const customFields = mapDynamicParamsToCustomFields(params, fieldMetadata);
-    
+
     // Project QM Hack: Suppress 'Type' if it exists and is 'Task' and project is QM
     if (customFields['Type'] === 'Task') {
-       // tentative fix 
+      // tentative fix 
     }
 
     const subtaskRequest: CreateSubtaskRequest = {
@@ -201,9 +237,9 @@ export async function createSubtask(
         {
           type: "text" as const,
           text: `Successfully created subtask ${result.subtask.idReadable} linked to ${params.parentIssueId}:\n\n` +
-                `**Summary:** ${result.subtask.summary}\n` +
-                `**Link:** Subtask of ${params.parentIssueId}\n` +
-                `**Created:** ${new Date(result.subtask.created).toLocaleString()}`
+            `**Summary:** ${result.subtask.summary}\n` +
+            `**Link:** Subtask of ${params.parentIssueId}\n` +
+            `**Created:** ${new Date(result.subtask.created).toLocaleString()}`
         }
       ]
     };
@@ -226,7 +262,7 @@ export async function createSubtask(
 export async function getSubtasks(client: YouTrackClient, params: z.infer<typeof getSubtasksSchema>) {
   try {
     const subtasks = await client.getSubtasks(params.parentIssueId, params.includeCompleted);
-    
+
     if (subtasks.length === 0) {
       return {
         content: [
@@ -243,7 +279,7 @@ export async function getSubtasks(client: YouTrackClient, params: z.infer<typeof
       const assignee = subtask.assignee ? ` (${subtask.assignee.fullName})` : ' (Unassigned)';
       const estimation = subtask.estimation ? ` | Est: ${subtask.estimation.presentation}` : '';
       const storyPoints = subtask.storyPoints ? ` | SP: ${subtask.storyPoints}` : '';
-      
+
       let details = `${status} **${subtask.idReadable}** - ${subtask.summary}${assignee}`;
       if (params.includeDetails) {
         details += `\n  State: ${subtask.state?.name || 'Unknown'}${estimation}${storyPoints}`;
@@ -285,7 +321,7 @@ export async function getSubtasks(client: YouTrackClient, params: z.infer<typeof
 export async function getParentIssue(client: YouTrackClient, params: z.infer<typeof getParentIssueSchema>) {
   try {
     const parent = await client.getParentIssue(params.subtaskIssueId);
-    
+
     if (!parent) {
       return {
         content: [
@@ -302,12 +338,12 @@ export async function getParentIssue(client: YouTrackClient, params: z.infer<typ
         {
           type: "text" as const,
           text: `**Parent Issue of ${params.subtaskIssueId}:**\n\n` +
-                `**ID:** ${parent.idReadable}\n` +
-                `**Summary:** ${parent.summary}\n` +
-                `**Project:** ${parent.project.name} (${parent.project.shortName})\n` +
-                `**Assignee:** ${parent.assignee?.fullName || 'Unassigned'}\n` +
-                `**State:** ${parent.customFields?.find(f => f.name === 'State')?.value?.name || 'Unknown'}\n` +
-                `**Created:** ${new Date(parent.created).toLocaleString()}`
+            `**ID:** ${parent.idReadable}\n` +
+            `**Summary:** ${parent.summary}\n` +
+            `**Project:** ${parent.project.name} (${parent.project.shortName})\n` +
+            `**Assignee:** ${parent.assignee?.fullName || 'Unassigned'}\n` +
+            `**State:** ${parent.customFields?.find(f => f.name === 'State')?.value?.name || 'Unknown'}\n` +
+            `**Created:** ${new Date(parent.created).toLocaleString()}`
         }
       ]
     };
@@ -365,11 +401,11 @@ export async function convertToSubtask(client: YouTrackClient, params: z.infer<t
           // For the standard "Subtask" link type, parent links OUTWARD to subtask
           direction = 'OUTWARD';
         } else if (linkType.toLowerCase().includes('subtask of') ||
-                   linkType.toLowerCase().includes('child of')) {
+          linkType.toLowerCase().includes('child of')) {
           // For "subtask of" links, parent should link OUTWARD to subtask
           direction = 'OUTWARD';
         } else if (linkType.toLowerCase().includes('parent for') ||
-                   linkType.toLowerCase().includes('parent of')) {
+          linkType.toLowerCase().includes('parent of')) {
           // For "parent for" links, parent should link OUTWARD to subtask
           direction = 'OUTWARD';
         }
@@ -411,10 +447,10 @@ export async function convertToSubtask(client: YouTrackClient, params: z.infer<t
         {
           type: "text" as const,
           text: `Successfully converted issue ${params.issueId} to a subtask of ${params.parentIssueId}:\n\n` +
-                `**Link Type:** ${link.linkType.localizedName || link.linkType.name}\n` +
-                `**Direction:** ${link.direction}\n` +
-                `**Link ID:** ${link.id}\n\n` +
-                `Issue ${params.issueId} is now a subtask of ${params.parentIssueId}.`
+            `**Link Type:** ${link.linkType.localizedName || link.linkType.name}\n` +
+            `**Direction:** ${link.direction}\n` +
+            `**Link ID:** ${link.id}\n\n` +
+            `Issue ${params.issueId} is now a subtask of ${params.parentIssueId}.`
         }
       ]
     };
@@ -437,7 +473,7 @@ export async function convertToSubtask(client: YouTrackClient, params: z.infer<t
 export function buildCreateMultipleSubtasksSchema(customFields: Array<{ name: string; fieldType: { valueType: string } }> = []) {
   // Use the single subtask schema shape as the base for items
   const subtaskShape = buildCreateSubtaskSchema(customFields).shape;
-  
+
   // Create an object schema from the shape
   const subtaskItemSchema = z.object(subtaskShape);
 
@@ -477,26 +513,26 @@ export async function createMultipleSubtasks(client: YouTrackClient, params: Rec
     };
 
     const results = await client.createMultipleSubtasks(request);
-    
+
     const successCount = results.filter(r => r.success).length;
     const failureCount = results.length - successCount;
-    
+
     const successfulSubtasks = results
       .filter(r => r.success)
       .map(r => `✅ **${r.subtask!.idReadable}** - ${r.subtask!.summary}`)
       .join('\n');
-    
+
     const failedSubtasks = results
       .filter(r => !r.success)
       .map(r => `❌ ${r.summary} - ${r.error}`)
       .join('\n');
 
     let responseText = `**Created ${successCount} of ${results.length} subtasks for ${params.parentIssueId}:**\n\n`;
-    
+
     if (successfulSubtasks) {
       responseText += `**Successful:**\n${successfulSubtasks}\n\n`;
     }
-    
+
     if (failedSubtasks) {
       responseText += `**Failed:**\n${failedSubtasks}`;
     }

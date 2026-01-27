@@ -71,12 +71,12 @@ export class YouTrackClient {
         if (error.response) {
           this.updateRateLimitInfo(error.response.headers);
           this.handleApiError(error);
-          
+
           // Enhance error with meaningful message from YouTrack API
           const apiError = error.response.data;
           if (apiError) {
-            const errorMessage = apiError.error_description || apiError.error || apiError.message || 
-                                (typeof apiError === 'string' ? apiError : JSON.stringify(apiError));
+            const errorMessage = apiError.error_description || apiError.error || apiError.message ||
+              (typeof apiError === 'string' ? apiError : JSON.stringify(apiError));
             error.message = `YouTrack API Error (${error.response.status}): ${errorMessage}`;
           }
         }
@@ -262,11 +262,19 @@ export class YouTrackClient {
   /**
    * Get all accessible custom fields from the server
    * Used for dynamic tool schema generation
+   * 
+   * Fetches project-level custom field configurations to properly show
+   * which values are available in which projects.
    */
-  async getAccessibleCustomFields(): Promise<Array<{ 
-    name: string; 
+  async getAccessibleCustomFields(): Promise<Array<{
+    name: string;
     fieldType: { valueType: string };
     instances?: Array<{
+      project?: {
+        id: string;
+        name: string;
+        shortName: string;
+      };
       bundle?: {
         values?: Array<{
           name: string;
@@ -283,7 +291,7 @@ export class YouTrackClient {
   }>> {
     try {
       const response = await this.makeRequest(() =>
-        this.client.get('/admin/customFieldSettings/customFields?fields=name,fieldType(valueType),instances(bundle(values(name,description))),defaultBundle(values(name,description))&$top=500')
+        this.client.get('/admin/customFieldSettings/customFields?fields=name,fieldType(valueType),instances(project(id,name,shortName),bundle(values(name,description))),defaultBundle(values(name,description))&$top=500')
       );
       return response.data;
     } catch (error) {
@@ -1315,7 +1323,7 @@ export class YouTrackClient {
    */
   async getSubtasks(parentIssueId: string, includeCompleted: boolean = false): Promise<SubtaskInfo[]> {
     const links = await this.getIssueLinks(parentIssueId);
-    
+
     // Collect all subtask issue IDs first
     const subtaskIssueIds: string[] = [];
 
@@ -1352,7 +1360,7 @@ export class YouTrackClient {
     // Fetch all subtask details in parallel (with concurrency limit to avoid rate limiting)
     const CONCURRENCY_LIMIT = 5;
     const subtasks: SubtaskInfo[] = [];
-    
+
     for (let i = 0; i < subtaskIssueIds.length; i += CONCURRENCY_LIMIT) {
       const batch = subtaskIssueIds.slice(i, i + CONCURRENCY_LIMIT);
       const batchResults = await Promise.all(
@@ -1501,10 +1509,10 @@ export class YouTrackClient {
 
     // Create subtasks in parallel batches (limit concurrency to avoid rate limiting)
     const CONCURRENCY_LIMIT = 3;
-    
+
     for (let i = 0; i < request.subtasks.length; i += CONCURRENCY_LIMIT) {
       const batch = request.subtasks.slice(i, i + CONCURRENCY_LIMIT);
-      
+
       const batchResults = await Promise.all(
         batch.map(async (subtaskData) => {
           try {
@@ -1539,7 +1547,7 @@ export class YouTrackClient {
       );
 
       results.push(...batchResults);
-      
+
       // Small delay between batches to be respectful of rate limits
       if (i + CONCURRENCY_LIMIT < request.subtasks.length) {
         await delay(100);
