@@ -186,9 +186,18 @@ export class YouTrackClient {
    */
   async testConnection(): Promise<boolean> {
     try {
-      await this.makeRequest(() => this.client.get('/admin/projects?fields=id&$top=1'));
+      // Use /users/me instead of /admin/projects - doesn't require admin permissions
+      await this.makeRequest(() => this.client.get('/users/me?fields=id'));
       return true;
-    } catch (error) {
+    } catch (error: any) {
+      console.error('Connection test failed:', error.message || error);
+      if (error.response?.status === 401) {
+        console.error('  → Token is invalid or expired. Please check YOUTRACK_TOKEN.');
+      } else if (error.response?.status === 403) {
+        console.error('  → Token lacks required permissions.');
+      } else if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+        console.error('  → Cannot reach YouTrack server. Check YOUTRACK_URL.');
+      }
       return false;
     }
   }
