@@ -134,7 +134,14 @@ async function main() {
       }
     );
 
-    // ... (search issues, etc.)
+    server.tool(
+      "delete-issue",
+      "Delete an issue permanently - WARNING: This operation cannot be undone!",
+      deleteIssueSchema.shape,
+      async ({ issueId }) => {
+        return deleteIssue(youtrackClient, { issueId });
+      }
+    );
 
     // Register Subtask Management Tools
     server.tool(
